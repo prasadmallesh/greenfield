@@ -1,0 +1,12 @@
+REFERENCE ONLY — DO NOT DELETE THIS FOLDER IF YOU NEED THE OLD APP FOR COMPARISON
+
+Full path to the legacy msoft PHP codebase (read-only reference for behaviour and SQL):
+
+  C:\Users\prasa\Downloads\cdp-data-2026-05-06-01-15-17\home\greenfarmaccount\public_html\msoft
+
+This path came from the machine where the project was unpacked (cdp-data download).
+If you move that folder, update this file and README.md so you always know where the reference copy lives.
+
+The NEW application lives only under:
+
+  C:\Users\prasa\OneDrive\Company\Greenfield

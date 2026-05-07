@@ -1,0 +1,26 @@
+{
+    "name": "greenfarm/msoft-greenfield",
+    "description": "Greenfield PHP app — same MySQL schema as legacy msoft; no outbound customer communications in default config.",
+    "type": "project",
+    "require": {
+        "php": "^8.2",
+        "slim/psr7": "^1.8",
+        "slim/slim": "^4.15",
+        "tecnickcom/tcpdf": "^6.11",
+        "vlucas/phpdotenv": "^5.6"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "scripts": {
+        "deploy:full": "php deploy/build.php --full",
+        "deploy:full:push": "php deploy/build.php --full --push",
+        "deploy:delta": "php deploy/build.php",
+        "deploy:mark": "php deploy/build.php --mark-only"
+    }
+}

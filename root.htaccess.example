@@ -1,0 +1,28 @@
+# =============================================================================
+# IF YOU GET 500 INTERNAL SERVER ERROR: delete this file from the server or
+# rename it away from .htaccess — then set cPanel document root to .../public
+# (see DEPLOY_CPANEL.md). That is the most reliable fix on cPanel.
+# =============================================================================
+#
+# Rename to .htaccess only if you CANNOT set document root to the `public/`
+# folder. Uses Apache 2.4 [END] to avoid rewrite loops.
+#
+# If the site lives in a SUBFOLDER (e.g. example.com/shop/), uncomment and fix:
+# RewriteBase /shop/
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+
+    # Do not rewrite requests that are already being served from /public/
+    RewriteCond %{REQUEST_URI} ^/public/ [NC]
+    RewriteRule ^ - [L]
+
+    # Static files and directories that exist under public/
+    RewriteCond %{DOCUMENT_ROOT}/public/$1 -f [OR]
+    RewriteCond %{DOCUMENT_ROOT}/public/$1 -d
+    RewriteRule ^(.*)$ public/$1 [END]
+
+    # Everything else → front controller
+    RewriteRule ^ public/index.php [END,QSA]
+</IfModule>
