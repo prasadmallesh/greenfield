@@ -716,8 +716,17 @@ if ($loggedIn && !$missingConfig) {
         .step h3 { font-size:.95rem; font-weight:600; margin:0 0 .35rem; color:#1a2c22; }
         .step p.desc { font-size:.8rem; color:#5a6b5f; margin:0 0 .75rem; }
         .badge-soft { background:#e3ece5; color:#1a4d2e; font-weight:500; }
-        pre.console { background:#141a16; color:#c8e6d0; font-size:.8rem; padding:1rem; border-radius:4px; max-height:16rem; overflow:auto; white-space:pre-wrap; }
+        pre.console { background:#141a16; color:#c8e6d0; font-size:.8rem; padding:1rem; border-radius:4px; overflow:auto; white-space:pre-wrap; min-height: 50vh; max-height: calc(100vh - 140px); }
         .status-strip { background:#fff; border:1px solid #d5ddd6; border-radius:6px; padding:.6rem 1rem; font-size:.85rem; margin-bottom:1rem; }
+        .hub-controls-col { max-height: calc(100vh - 100px); overflow-y: auto; padding-right: .25rem; }
+        .hub-output-col { position: sticky; top: .75rem; align-self: flex-start; }
+        .hub-output-card { background:#fff; border:1px solid #d5ddd6; border-radius:6px; overflow:hidden; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+        .hub-output-card .card-head { background:#1a2420; color:#b8e6c8; padding:.5rem 1rem; font-size:.75rem; font-weight:600; letter-spacing:.04em; }
+        @media (max-width: 767px) {
+            pre.console { min-height: 35vh; max-height: 40vh; }
+            .hub-controls-col { max-height: none; overflow-y: visible; }
+            .hub-output-col { position: relative; top: 0; margin-top: 1rem; }
+        }
     </style>
 </head>
 <body class="d-flex flex-column flex-md-row">
@@ -751,7 +760,7 @@ if ($loggedIn && !$missingConfig) {
         <div class="small text-white-50 mb-4">Git · ZIP · FTP</div>
         <div class="small"><a href="?logout=1" class="text-light">Sign out</a></div>
     </aside>
-    <main class="flex-fill p-3 p-md-4" style="min-width:0;">
+    <main class="flex-fill d-flex flex-column p-3 p-md-4" style="min-width:0;">
         <h1 class="h5 text-dark mb-3">Update hub</h1>
 
         <?php if ($banner !== null): ?>
@@ -778,10 +787,11 @@ if ($loggedIn && !$missingConfig) {
         <?php endif; ?>
 
         <?php if ($runError): ?>
-            <div class="alert alert-danger py-2"><?= htmlspecialchars($runError, ENT_QUOTES, 'UTF-8') ?></div>
+            <div class="alert alert-danger py-2 mb-3"><?= htmlspecialchars($runError, ENT_QUOTES, 'UTF-8') ?></div>
         <?php endif; ?>
 
-        <?php if ($loggedIn): ?>
+        <div class="row flex-fill align-items-md-start">
+        <div class="col-md-6 col-lg-7 hub-controls-col pr-md-2 pr-lg-3">
         <div class="step border-<?= $deployGate['ok'] ? 'success' : 'danger' ?>" style="border-width:2px;">
             <h3 class="d-flex align-items-center flex-wrap">Deploy readiness
                 <span class="badge badge-<?= $deployGate['ok'] ? 'success' : 'secondary' ?> ml-2"><?= $deployGate['ok'] ? 'PASS' : 'FAIL' ?></span>
@@ -794,7 +804,6 @@ if ($loggedIn && !$missingConfig) {
             </ul>
             <p class="desc small mb-0">Fix any FAIL items (commit, push, pull, or set upstream), then <strong>refresh this page</strong> to re-run the check.</p>
         </div>
-        <?php endif; ?>
 
         <div class="step">
             <h3>1. Pull / fetch from GitHub</h3>
@@ -951,12 +960,21 @@ if ($loggedIn && !$missingConfig) {
             </form>
         </div>
 
-        <div class="mt-3">
-            <div class="d-flex justify-content-between align-items-center mb-1">
-                <strong class="small text-uppercase text-muted">Output</strong>
-                <a href="?clearlog=1" class="small">Clear log</a>
+        </div>
+        <div class="col-md-6 col-lg-5 pl-md-2 pl-lg-2 hub-output-col">
+            <div class="hub-output-card">
+                <div class="card-head d-flex justify-content-between align-items-center">
+                    <span>OUTPUT</span>
+                    <span>
+                        <?php if ($exitCode !== null): ?>
+                            <span class="badge badge-<?= $exitCode === 0 ? 'success' : 'danger' ?> mr-2">packager exit <?= (int) $exitCode ?></span>
+                        <?php endif; ?>
+                        <a href="?clearlog=1" class="text-white-50 small" style="text-decoration:underline;">Clear log</a>
+                    </span>
+                </div>
+                <pre class="console mb-0 rounded-0 border-0"><?= $console !== '' ? htmlspecialchars($console, ENT_QUOTES, 'UTF-8') : htmlspecialchars('>> Actions will log here when you use the buttons on the left.', ENT_QUOTES, 'UTF-8') ?></pre>
             </div>
-            <pre class="console mb-0"><?= $console !== '' ? htmlspecialchars($console, ENT_QUOTES, 'UTF-8') : htmlspecialchars('>> Actions will log here.', ENT_QUOTES, 'UTF-8') ?></pre>
+        </div>
         </div>
 
         <p class="small text-muted mt-3 mb-0">Run locally: <code>php -S 127.0.0.1:8765 -t deploy/web</code></p>
