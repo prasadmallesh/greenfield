@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * GFM Deploy Hub — simple step UI (Git + ZIP). Local use only.
+ * GFM Deploy Hub — Git, ZIP packager, and gated FTP upload. Local use only.
  *
  *   php -S 127.0.0.1:8765 -t deploy/web
  *
@@ -205,36 +205,6 @@ function deploy_ui_git_merge_continue(string $projectRoot): array
     return [$code, $msg !== '' ? $msg . "\n" : "(no output)\n"];
 }
 
-/** Default GitHub remote for one-click setup (override in config.local.php). */
-function deploy_ui_github_remote_default(): string
-{
-    return 'https://github.com/prasadmallesh/greenfield.git';
-}
-
-/**
- * @param array<string, mixed> $cfg
- */
-function deploy_ui_resolve_github_remote(array $cfg): string
-{
-    $u = trim((string) ($cfg['github_remote_url'] ?? ''));
-    if ($u !== '') {
-        return preg_match('/\.git$/i', $u) === 1 ? $u : rtrim($u, '/') . '.git';
-    }
-
-    return deploy_ui_github_remote_default();
-}
-
-function deploy_ui_github_remote_valid(string $url): bool
-{
-    $u = trim($url);
-    if ($u === '' || strlen($u) > 220) {
-        return false;
-    }
-
-    return preg_match('#^https://github\.com/[a-z0-9_.-]+/[a-z0-9_.-]+(?:\.git)?/?$#i', $u) === 1
-        || preg_match('#^git@github\.com:[a-z0-9_.-]+/[a-z0-9_.-]+(?:\.git)?$#i', $u) === 1;
-}
-
 /**
  * @param list<string> $argv arguments after "git -C root"
  * @return array{0: int, 1: string}
@@ -254,82 +224,140 @@ function deploy_ui_git_exec_raw(string $projectRoot, array $argv): array
 }
 
 /**
- * One-shot: init repo (if needed), set origin, rename branch to main, add all, commit if needed, push.
+ * Git must be clean and match upstream before FTP — runs git fetch for an accurate compare.
  *
- * @return array{0: bool, 1: string} success flag and full log
+ * @return array{ok: bool, lines: list<string>}
  */
-function deploy_ui_github_bootstrap(string $projectRoot, string $remoteUrl, string $commitMessage): array
+function deploy_ui_git_deploy_gate(string $projectRoot): array
 {
-    $log = '';
+    $lines = [];
+    if (!deploy_ui_git_repo($projectRoot)) {
+        $lines[] = 'Not a git repository (or no commits yet).';
+
+        return ['ok' => false, 'lines' => $lines];
+    }
     if (deploy_ui_merge_in_progress($projectRoot)) {
-        return [false, "Aborted: a merge is in progress. Abort or continue the merge first.\n"];
-    }
-    if (!deploy_ui_github_remote_valid($remoteUrl)) {
-        return [false, "Invalid GitHub remote URL.\n"];
-    }
-    if (!deploy_ui_commit_safe($commitMessage)) {
-        return [false, "Invalid commit message.\n"];
-    }
+        $lines[] = 'A merge is in progress — finish or abort it first.';
 
-    if (!is_dir($projectRoot . DIRECTORY_SEPARATOR . '.git')) {
-        [$c, $o] = deploy_ui_git_exec_raw($projectRoot, ['init']);
-        $log .= ">> git init\n" . $o;
-        if ($c !== 0) {
-            return [false, $log];
-        }
+        return ['ok' => false, 'lines' => $lines];
     }
-
-    [$rc] = deploy_ui_git_exec_raw($projectRoot, ['remote', 'get-url', 'origin']);
-    if ($rc !== 0) {
-        [$c, $o] = deploy_ui_git_exec_raw($projectRoot, ['remote', 'add', 'origin', $remoteUrl]);
-        $log .= ">> git remote add origin\n" . $o;
-        if ($c !== 0) {
-            return [false, $log];
-        }
-    } else {
-        [$c, $o] = deploy_ui_git_exec_raw($projectRoot, ['remote', 'set-url', 'origin', $remoteUrl]);
-        $log .= ">> git remote set-url origin\n" . $o;
-        if ($c !== 0) {
-            return [false, $log];
-        }
-    }
-
-    [$c, $o] = deploy_ui_git_exec_raw($projectRoot, ['add', '-A']);
-    $log .= ">> git add -A\n" . $o;
-    if ($c !== 0) {
-        return [false, $log];
-    }
-
-    [, $por] = deploy_ui_git_exec_raw($projectRoot, ['status', '--porcelain']);
-    [$hc] = deploy_ui_git_exec_raw($projectRoot, ['rev-parse', 'HEAD']);
-    $hasCommit = $hc === 0;
-
+    [, $por] = deploy_ui_git($projectRoot, ['status', '--porcelain']);
     if (trim($por) !== '') {
-        [$c, $o] = deploy_ui_git_exec_raw($projectRoot, ['commit', '-m', $commitMessage]);
-        $log .= ">> git commit -m …\n" . $o;
-        if ($c !== 0) {
-            return [false, $log];
-        }
-        $hasCommit = true;
-    } elseif (!$hasCommit) {
-        return [false, $log . ">> Stopped: nothing to commit (no files to push). Add your project files or adjust .gitignore, then try again.\n"];
-    } else {
-        $log .= ">> working tree already committed — skipping commit\n";
+        $lines[] = 'Working tree is not clean — commit or stash all changes before uploading to the server.';
+
+        return ['ok' => false, 'lines' => $lines];
     }
 
-    [$c, $o] = deploy_ui_git_exec_raw($projectRoot, ['branch', '-M', 'main']);
-    $log .= ">> git branch -M main\n" . $o;
-    if ($c !== 0) {
-        return [false, $log];
+    [$fc, $fo] = deploy_ui_git($projectRoot, ['fetch']);
+    if ($fc !== 0) {
+        $lines[] = 'git fetch failed — cannot verify you are in sync with GitHub. Fix network/auth, then try again.';
+        $lines[] = trim($fo);
+
+        return ['ok' => false, 'lines' => $lines];
     }
 
-    [$c, $o] = deploy_ui_git_exec_raw($projectRoot, ['push', '-u', 'origin', 'main']);
-    $log .= ">> git push -u origin main\n" . $o;
-    if ($c !== 0) {
-        return [false, $log];
+    [$uc, $uo] = deploy_ui_git_exec_raw($projectRoot, ['rev-parse', '--verify', '@{upstream}']);
+    if ($uc !== 0) {
+        $lines[] = 'This branch has no upstream (tracking) branch.';
+        $lines[] = 'Set it once, e.g. git push -u origin main, then refresh this page.';
+
+        return ['ok' => false, 'lines' => $lines];
     }
 
-    return [true, $log];
+    [$cc, $co] = deploy_ui_git_exec_raw($projectRoot, ['rev-list', '--left-right', '--count', 'HEAD...@{upstream}']);
+    if ($cc !== 0) {
+        $lines[] = 'Could not compare HEAD to upstream.';
+        $lines[] = trim($co);
+
+        return ['ok' => false, 'lines' => $lines];
+    }
+    $parts = preg_split('/\s+/', trim($co));
+    $ahead = (int) ($parts[0] ?? 0);
+    $behind = (int) ($parts[1] ?? 0);
+    if ($ahead > 0) {
+        $lines[] = "You are {$ahead} commit(s) ahead of the remote — push to GitHub before FTP deploy.";
+    }
+    if ($behind > 0) {
+        $lines[] = "You are {$behind} commit(s) behind the remote — pull (merge) so local matches GitHub before FTP deploy.";
+    }
+    if ($ahead > 0 || $behind > 0) {
+        return ['ok' => false, 'lines' => $lines];
+    }
+
+    $lines[] = 'Working tree clean, fetch OK, and local branch matches upstream (nothing ahead / behind).';
+
+    return ['ok' => true, 'lines' => $lines];
+}
+
+/**
+ * @param array<string, mixed> $cfg
+ */
+function deploy_ui_ftp_configured(array $cfg): bool
+{
+    $h = trim((string) ($cfg['ftp_host'] ?? ''));
+    $u = trim((string) ($cfg['ftp_user'] ?? ''));
+    $d = trim((string) ($cfg['ftp_remote_dir'] ?? ''));
+
+    return $h !== '' && $u !== '' && $d !== '';
+}
+
+/**
+ * @param array<string, mixed> $cfg
+ * @return array{0: bool, 1: string}
+ */
+function deploy_ui_ftp_upload_latest_zip(string $projectRoot, array $cfg): array
+{
+    if (!function_exists('ftp_connect')) {
+        return [false, "PHP FTP extension is not enabled (enable ext-ftp).\n"];
+    }
+    if (!deploy_ui_ftp_configured($cfg)) {
+        return [false, "FTP is not configured in config.local.php (ftp_host, ftp_user, ftp_password, ftp_remote_dir).\n"];
+    }
+    $gate = deploy_ui_git_deploy_gate($projectRoot);
+    if (!$gate['ok']) {
+        return [false, "Blocked: Git is not in sync.\n" . implode("\n", $gate['lines']) . "\n"];
+    }
+    $zips = deploy_ui_list_zips($projectRoot);
+    if ($zips === []) {
+        return [false, "No deploy ZIP found in dist/. Build a package first (step 5).\n"];
+    }
+    $localZip = $zips[0];
+    $basename = basename($localZip);
+    if (!deploy_ui_safe_zip_basename($basename)) {
+        return [false, "Invalid ZIP name.\n"];
+    }
+
+    $host = trim((string) $cfg['ftp_host']);
+    $port = (int) ($cfg['ftp_port'] ?? 21);
+    $user = trim((string) $cfg['ftp_user']);
+    $pass = (string) $cfg['ftp_password'];
+    $remoteDir = trim((string) $cfg['ftp_remote_dir'], " /\r\n\t");
+    $passive = ($cfg['ftp_passive'] ?? true) !== false;
+
+    $conn = @ftp_connect($host, $port > 0 ? $port : 21, 30);
+    if ($conn === false) {
+        return [false, "Could not connect to FTP host {$host}:{$port}\n"];
+    }
+    if (!@ftp_login($conn, $user, $pass)) {
+        ftp_close($conn);
+
+        return [false, "FTP login failed.\n"];
+    }
+    if ($passive) {
+        @ftp_pasv($conn, true);
+    }
+    if (!@ftp_chdir($conn, $remoteDir)) {
+        ftp_close($conn);
+
+        return [false, "Could not cd to remote directory: {$remoteDir}\n"];
+    }
+    $ok = @ftp_put($conn, $basename, $localZip, FTP_BINARY);
+    ftp_close($conn);
+    if (!$ok) {
+        return [false, "FTP put failed for {$basename}\n"];
+    }
+
+    return [true, "Uploaded {$basename} to /{$remoteDir}/{$basename}\n"];
 }
 
 function deploy_ui_git_repo(string $projectRoot): bool
@@ -560,28 +588,6 @@ if ($loggedIn && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['
         if ($act === 'pull') {
             [$c, $o] = deploy_ui_git($projectRoot, ['pull', '--ff-only']);
             deploy_console_add('git pull --ff-only', $o . ($c !== 0 ? "\n(exit {$c})" : ''));
-        } elseif ($act === 'github_setup') {
-            if (empty($_POST['github_setup_confirm'])) {
-                $runError = 'Check the confirmation box to run automated GitHub setup.';
-            } else {
-                $url = trim((string) ($_POST['github_remote_url'] ?? ''));
-                if ($url === '') {
-                    $url = deploy_ui_resolve_github_remote($cfg);
-                }
-                if (!deploy_ui_github_remote_valid($url)) {
-                    $runError = 'Remote must be a github.com HTTPS or git@github.com SSH URL.';
-                } else {
-                    $msg = trim((string) ($_POST['github_setup_msg'] ?? ''));
-                    if ($msg === '') {
-                        $msg = 'Initial commit from GFM Deploy Hub';
-                    }
-                    [$ok, $log] = deploy_ui_github_bootstrap($projectRoot, $url, $msg);
-                    deploy_console_add('GitHub one-click setup', $log . ($ok ? "\nDone." : "\nStopped with errors."));
-                    if (!$ok) {
-                        $runError = 'Setup did not finish — see Output log. Fix auth (PAT/SSH) or errors, then retry.';
-                    }
-                }
-            }
         } elseif ($act === 'fetch') {
             [$c, $o] = deploy_ui_git($projectRoot, ['fetch']);
             deploy_console_add('git fetch', $o . ($c !== 0 ? "\n(exit {$c})" : ''));
@@ -669,6 +675,12 @@ if ($loggedIn && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['
                     deploy_console_add('deploy/build.php ' . implode(' ', $args), $output . "\n(exit " . (int) $exitCode . ')');
                 }
             }
+        } elseif ($act === 'ftp_upload') {
+            [$fok, $flog] = deploy_ui_ftp_upload_latest_zip($projectRoot, $cfg);
+            deploy_console_add('FTP upload', $flog);
+            if (!$fok) {
+                $runError = 'FTP upload blocked or failed — see Output log.';
+            }
         }
     }
 }
@@ -676,7 +688,16 @@ if ($loggedIn && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['
 $csrf = deploy_ui_csrf_token();
 $zips = $loggedIn ? deploy_ui_list_zips($projectRoot) : [];
 $console = $loggedIn ? deploy_console_text() : '';
-$githubRemoteDefault = ($loggedIn && !$missingConfig) ? deploy_ui_resolve_github_remote($cfg) : deploy_ui_github_remote_default();
+$deployGate = ['ok' => false, 'lines' => ['Sign in to see deploy status.']];
+$ftpConfigured = false;
+if ($loggedIn && !$missingConfig) {
+    $ftpConfigured = deploy_ui_ftp_configured($cfg);
+    if ($isGit) {
+        $deployGate = deploy_ui_git_deploy_gate($projectRoot);
+    } else {
+        $deployGate = ['ok' => false, 'lines' => ['Not a git repository — connect this folder to git first. FTP upload is disabled.']];
+    }
+}
 
 ?>
 <!DOCTYPE html>
@@ -727,7 +748,7 @@ $githubRemoteDefault = ($loggedIn && !$missingConfig) ? deploy_ui_resolve_github
 <?php else: ?>
     <aside class="sidebar p-3">
         <div class="brand mb-1">GFM Deploy Hub</div>
-        <div class="small text-white-50 mb-4">Local Git + ZIP</div>
+        <div class="small text-white-50 mb-4">Git · ZIP · FTP</div>
         <div class="small"><a href="?logout=1" class="text-light">Sign out</a></div>
     </aside>
     <main class="flex-fill p-3 p-md-4" style="min-width:0;">
@@ -748,6 +769,11 @@ $githubRemoteDefault = ($loggedIn && !$missingConfig) ? deploy_ui_resolve_github
                 <?php endif; ?>
             </span>
             <span class="text-truncate" style="max-width:28rem;" title="<?= htmlspecialchars($banner['remote'], ENT_QUOTES, 'UTF-8') ?>"><strong>Remote</strong> <?= htmlspecialchars($banner['remote'], ENT_QUOTES, 'UTF-8') ?></span>
+            <?php if ($isGit && $loggedIn): ?>
+                <span class="mr-3 ml-md-3"><strong>FTP gate</strong>
+                    <span class="badge badge-<?= $deployGate['ok'] ? 'success' : 'danger' ?>" title="Git must match GitHub before server upload"><?= $deployGate['ok'] ? 'OK to deploy' : 'blocked' ?></span>
+                </span>
+            <?php endif; ?>
         </div>
         <?php endif; ?>
 
@@ -755,35 +781,23 @@ $githubRemoteDefault = ($loggedIn && !$missingConfig) ? deploy_ui_resolve_github
             <div class="alert alert-danger py-2"><?= htmlspecialchars($runError, ENT_QUOTES, 'UTF-8') ?></div>
         <?php endif; ?>
 
-        <div class="step">
-            <h3>1. Connect this folder to GitHub</h3>
-            <p class="desc">Target repo: <a href="https://github.com/prasadmallesh/greenfield" target="_blank" rel="noopener">github.com/prasadmallesh/greenfield</a>. Use the button below instead of typing commands — you still need GitHub auth (HTTPS personal access token or SSH key) on this machine.</p>
-            <form method="post" class="border rounded p-3 bg-light mb-3">
-                <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
-                <input type="hidden" name="hub_action" value="github_setup">
-                <div class="form-group mb-2">
-                    <label class="small font-weight-bold" for="ghurl">Remote URL</label>
-                    <input type="text" name="github_remote_url" id="ghurl" class="form-control form-control-sm" value="<?= htmlspecialchars($githubRemoteDefault, ENT_QUOTES, 'UTF-8') ?>" placeholder="https://github.com/owner/repo.git or git@github.com:owner/repo.git" autocomplete="off">
-                </div>
-                <div class="form-group mb-2">
-                    <label class="small font-weight-bold" for="ghmsg">Commit message (if a new commit is created)</label>
-                    <input type="text" name="github_setup_msg" id="ghmsg" class="form-control form-control-sm" value="Initial commit from GFM Deploy Hub" maxlength="400">
-                </div>
-                <div class="custom-control custom-checkbox mb-2">
-                    <input type="checkbox" class="custom-control-input" name="github_setup_confirm" id="ghconf" value="1" required>
-                    <label class="custom-control-label small" for="ghconf">Run <code>git init</code> (if needed), set <code>origin</code>, <code>git add -A</code>, commit if there are changes, rename branch to <code>main</code>, and <code>git push -u origin main</code></label>
-                </div>
-                <button type="submit" class="btn btn-success btn-sm">Connect &amp; push to GitHub</button>
-            </form>
-            <p class="desc mb-1">Manual fallback (same project root):</p>
-            <pre class="small bg-white p-2 rounded mb-0" style="max-height:7rem;overflow:auto;">git init
-git remote add origin <?= htmlspecialchars($githubRemoteDefault, ENT_QUOTES, 'UTF-8') ?>
-
-git add -A &amp;&amp; git commit -m "Initial commit" &amp;&amp; git branch -M main &amp;&amp; git push -u origin main</pre>
+        <?php if ($loggedIn): ?>
+        <div class="step border-<?= $deployGate['ok'] ? 'success' : 'danger' ?>" style="border-width:2px;">
+            <h3 class="d-flex align-items-center flex-wrap">Deploy readiness
+                <span class="badge badge-<?= $deployGate['ok'] ? 'success' : 'secondary' ?> ml-2"><?= $deployGate['ok'] ? 'PASS' : 'FAIL' ?></span>
+            </h3>
+            <p class="desc mb-2">FTP upload to your host is <strong>only allowed</strong> when all checks pass: no uncommitted changes, <code>git fetch</code> succeeds, your branch tracks a remote, and you are <strong>neither ahead nor behind</strong> that remote (same commits as GitHub). Otherwise the upload button stays disabled and the server step is blocked.</p>
+            <ul class="small mb-3 pl-3">
+                <?php foreach ($deployGate['lines'] as $ln): ?>
+                    <li><?= htmlspecialchars($ln, ENT_QUOTES, 'UTF-8') ?></li>
+                <?php endforeach; ?>
+            </ul>
+            <p class="desc small mb-0">Fix any FAIL items (commit, push, pull, or set upstream), then <strong>refresh this page</strong> to re-run the check.</p>
         </div>
+        <?php endif; ?>
 
         <div class="step">
-            <h3>2. Pull / fetch from GitHub</h3>
+            <h3>1. Pull / fetch from GitHub</h3>
             <p class="desc"><strong>Pull</strong> runs <code>git pull --ff-only</code> (fast-forward only). <strong>Fetch</strong> updates remote refs without merging — use before merging <code>origin/…</code> branches.</p>
             <form method="post" class="d-inline mr-2">
                 <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
@@ -798,7 +812,7 @@ git add -A &amp;&amp; git commit -m "Initial commit" &amp;&amp; git branch -M ma
         </div>
 
         <div class="step">
-            <h3>3. Merge branches</h3>
+            <h3>2. Merge branches</h3>
             <p class="desc">Merges another branch or remote tracking branch <strong>into your current branch</strong> with <code>git merge --no-edit</code>. If there are conflicts, resolve them in your editor/terminal, then use <strong>Continue merge</strong> here (uses a non-interactive editor for the merge commit).</p>
             <form method="post" class="mb-2">
                 <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
@@ -835,7 +849,7 @@ git add -A &amp;&amp; git commit -m "Initial commit" &amp;&amp; git branch -M ma
         </div>
 
         <div class="step">
-            <h3>4. Commit &amp; push (app files only)</h3>
+            <h3>3. Commit &amp; push (app files only)</h3>
             <p class="desc">Stages: <code>src/</code>, <code>templates/</code>, <code>public/</code>, <code>deploy/</code>, <code>bootstrap.php</code>, Composer files — not <code>vendor/</code> or <code>.env</code>.</p>
             <form method="post" class="mb-2">
                 <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
@@ -852,7 +866,7 @@ git add -A &amp;&amp; git commit -m "Initial commit" &amp;&amp; git branch -M ma
         </div>
 
         <div class="step">
-            <h3>5. Build deploy ZIP</h3>
+            <h3>4. Build deploy ZIP</h3>
             <p class="desc">Same as <code>php deploy/build.php</code>. Upload the ZIP to your host, then <code>composer install --no-dev</code> if needed.</p>
             <form method="post">
                 <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
@@ -909,6 +923,32 @@ git add -A &amp;&amp; git commit -m "Initial commit" &amp;&amp; git branch -M ma
                     <?php endforeach; ?>
                 </ul>
             <?php endif; ?>
+        </div>
+
+        <div class="step">
+            <h3>5. Upload to server (FTP)</h3>
+            <p class="desc">Uploads the <strong>newest</strong> file from <code>dist/gfm-deploy-*.zip</code> into your configured remote folder (same filename). Unzip on the host if your workflow uses a package file. Configure <code>ftp_*</code> keys in <code>config.local.php</code>.</p>
+            <?php if (!$ftpConfigured): ?>
+                <div class="alert alert-warning py-2 small mb-2">Add <code>ftp_host</code>, <code>ftp_user</code>, <code>ftp_password</code>, and <code>ftp_remote_dir</code> to <code>deploy/web/config.local.php</code> (see <code>config.example.php</code>). Optional: <code>ftp_port</code> (default 21), <code>ftp_passive</code> (default true).</div>
+            <?php endif; ?>
+            <?php if ($zips === []): ?>
+                <p class="small text-muted mb-2">Build a ZIP in step 4 first — nothing to upload yet.</p>
+            <?php else: ?>
+                <p class="small mb-2">Next file: <code><?= htmlspecialchars(basename($zips[0]), ENT_QUOTES, 'UTF-8') ?></code></p>
+            <?php endif; ?>
+            <form method="post">
+                <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="hub_action" value="ftp_upload">
+                <?php
+                $canFtp = $ftpConfigured && $deployGate['ok'] && $zips !== [];
+                ?>
+                <button type="submit" class="btn btn-warning text-dark btn-sm font-weight-bold" <?= $canFtp ? '' : 'disabled title="Configure FTP, pass Git checks, and build a ZIP"' ?>>Upload latest ZIP via FTP</button>
+                <?php if ($ftpConfigured && !$deployGate['ok']): ?>
+                    <span class="small text-danger ml-2">Blocked — Git checks above must pass.</span>
+                <?php elseif ($ftpConfigured && $zips === []): ?>
+                    <span class="small text-muted ml-2">Blocked — no ZIP in dist/.</span>
+                <?php endif; ?>
+            </form>
         </div>
 
         <div class="mt-3">
