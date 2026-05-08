@@ -85,6 +85,33 @@ function deploy_console_text(): string
     return is_array($a) ? implode("\n\n", $a) : '';
 }
 
+/** Hub wizard: step 1 = successful pull/fetch this session; cleared downstream when step 1 runs again. */
+function deploy_hub_wizard_step1_ok(): bool
+{
+    return !empty($_SESSION['deploy_hub_step1']);
+}
+
+function deploy_hub_wizard_step2_ok(): bool
+{
+    return !empty($_SESSION['deploy_hub_step2']);
+}
+
+function deploy_hub_wizard_mark_pull_fetch_ok(): void
+{
+    $_SESSION['deploy_hub_step1'] = true;
+    unset($_SESSION['deploy_hub_step2']);
+}
+
+function deploy_hub_wizard_mark_merge_ok(): void
+{
+    $_SESSION['deploy_hub_step2'] = true;
+}
+
+function deploy_hub_wizard_clear_merge_ok(): void
+{
+    unset($_SESSION['deploy_hub_step2']);
+}
+
 /**
  * Run git with a fixed allowlist (no user-supplied git args).
  *
@@ -129,7 +156,7 @@ function deploy_ui_merge_ref_safe(string $ref): bool
         return false;
     }
 
-    return preg_match('/^[a-zA-Z0-9@^_./-]+$/', $ref) === 1;
+    return preg_match('#^[a-zA-Z0-9@^_./-]+$#', $ref) === 1;
 }
 
 function deploy_ui_merge_in_progress(string $projectRoot): bool
@@ -258,8 +285,8 @@ function deploy_ui_git_deploy_gate(string $projectRoot): array
 
     [$uc, $uo] = deploy_ui_git_exec_raw($projectRoot, ['rev-parse', '--verify', '@{upstream}']);
     if ($uc !== 0) {
-        $lines[] = 'This branch has no upstream (tracking) branch.';
-        $lines[] = 'Set it once, e.g. git push -u origin main, then refresh this page.';
+        $lines[] = 'Your project folder is not linked to your GitHub/GitLab copy for syncing.';
+        $lines[] = 'Link it once from the command line (your developer can run e.g. git push -u origin main), then refresh this page.';
 
         return ['ok' => false, 'lines' => $lines];
     }
@@ -275,16 +302,16 @@ function deploy_ui_git_deploy_gate(string $projectRoot): array
     $ahead = (int) ($parts[0] ?? 0);
     $behind = (int) ($parts[1] ?? 0);
     if ($ahead > 0) {
-        $lines[] = "You are {$ahead} commit(s) ahead of the remote — push to GitHub before FTP deploy.";
+        $lines[] = "Your computer has {$ahead} saved change(s) not yet on GitHub — push first, then upload.";
     }
     if ($behind > 0) {
-        $lines[] = "You are {$behind} commit(s) behind the remote — pull (merge) so local matches GitHub before FTP deploy.";
+        $lines[] = "GitHub has {$behind} newer save(s) — click Pull latest so your computer matches, then upload.";
     }
     if ($ahead > 0 || $behind > 0) {
         return ['ok' => false, 'lines' => $lines];
     }
 
-    $lines[] = 'Working tree clean, fetch OK, and local branch matches upstream (nothing ahead / behind).';
+    $lines[] = 'Safe to upload: no unsaved files, online copy checked, and your computer matches GitHub.';
 
     return ['ok' => true, 'lines' => $lines];
 }
@@ -587,27 +614,49 @@ if ($loggedIn && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['
         $act = (string) $_POST['hub_action'];
         if ($act === 'pull') {
             [$c, $o] = deploy_ui_git($projectRoot, ['pull', '--ff-only']);
+            if ($c === 0) {
+                deploy_hub_wizard_mark_pull_fetch_ok();
+            }
             deploy_console_add('git pull --ff-only', $o . ($c !== 0 ? "\n(exit {$c})" : ''));
         } elseif ($act === 'fetch') {
             [$c, $o] = deploy_ui_git($projectRoot, ['fetch']);
+            if ($c === 0) {
+                deploy_hub_wizard_mark_pull_fetch_ok();
+            }
             deploy_console_add('git fetch', $o . ($c !== 0 ? "\n(exit {$c})" : ''));
         } elseif ($act === 'merge') {
             $ref = trim((string) ($_POST['merge_ref'] ?? ''));
             if ($ref === '') {
-                $runError = 'Enter a branch or ref to merge (e.g. origin/main).';
+                $runError = 'Merge needs a target name (advanced — use only if you know Git branches).';
+            } elseif (!deploy_hub_wizard_step1_ok()) {
+                $runError = 'Run Pull or Fetch in step 1 successfully before merging.';
             } else {
                 $noFf = !empty($_POST['merge_no_ff']);
                 [$mc, $mo] = deploy_ui_git_merge($projectRoot, $ref, $noFf);
                 $label = 'git merge --no-edit' . ($noFf ? ' --no-ff' : '') . ' ' . $ref;
                 deploy_console_add($label, $mo . ($mc !== 0 ? "\n(exit {$mc})" : ''));
+                if ($mc === 0) {
+                    deploy_hub_wizard_mark_merge_ok();
+                } else {
+                    deploy_hub_wizard_clear_merge_ok();
+                }
             }
         } elseif ($act === 'merge_abort') {
             [$c, $o] = deploy_ui_git($projectRoot, ['merge', '--abort']);
+            if ($c === 0) {
+                deploy_hub_wizard_clear_merge_ok();
+            }
             deploy_console_add('git merge --abort', $o . ($c !== 0 ? "\n(exit {$c})" : ''));
         } elseif ($act === 'merge_continue') {
             [$c, $o] = deploy_ui_git_merge_continue($projectRoot);
+            if ($c === 0) {
+                deploy_hub_wizard_mark_merge_ok();
+            }
             deploy_console_add('git merge --continue', $o . ($c !== 0 ? "\n(exit {$c})" : ''));
         } elseif ($act === 'commit') {
+            if (!deploy_hub_wizard_step1_ok()) {
+                $runError = 'Use Pull latest or Fetch first (step 1), then save & push.';
+            } else {
             $msg = trim((string) ($_POST['commit_msg'] ?? ''));
             [$ac, $ao] = deploy_ui_git_stage_app($projectRoot);
             deploy_console_add('git add (app paths)', $ao . ($ac !== 0 ? "\n(exit {$ac})" : ''));
@@ -618,6 +667,7 @@ if ($loggedIn && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['
                     [$pc, $po] = deploy_ui_git($projectRoot, ['push']);
                     deploy_console_add('git push', $po . ($pc !== 0 ? "\n(exit {$pc})" : ''));
                 }
+            }
             }
         } elseif ($act === 'pack') {
             $mode = (string) ($_POST['mode'] ?? 'full');
@@ -630,7 +680,7 @@ if ($loggedIn && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['
             } elseif ($mode === 'delta') {
                 $since = trim((string) ($_POST['since'] ?? ''));
                 if ($since === '') {
-                    $runError = 'Enter a ref for delta (e.g. origin/main).';
+                    $runError = 'Enter a snapshot name for this delta build (advanced).';
                 } else {
                     $args[] = '--since=' . $since;
                 }
@@ -685,6 +735,8 @@ if ($loggedIn && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['
     }
 }
 
+$hubWizardStep1 = deploy_hub_wizard_step1_ok();
+
 $csrf = deploy_ui_csrf_token();
 $zips = $loggedIn ? deploy_ui_list_zips($projectRoot) : [];
 $console = $loggedIn ? deploy_console_text() : '';
@@ -727,6 +779,18 @@ if ($loggedIn && !$missingConfig) {
             .hub-controls-col { max-height: none; overflow-y: visible; }
             .hub-output-col { position: relative; top: 0; margin-top: 1rem; }
         }
+        .pack-section-title { font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; color:#5a6b5f; font-weight:600; margin:0 0 .5rem; }
+        .pack-mode-list .custom-control { padding-left:1.65rem; margin-bottom:.65rem; }
+        .pack-mode-list .custom-control:last-child { margin-bottom:0; }
+        .pack-mode-list label { cursor:pointer; }
+        .pack-mode-line { display:block; font-weight:600; font-size:.82rem; color:#1a2c22; }
+        .pack-mode-hint { display:block; font-weight:400; font-size:.75rem; color:#6a7a70; margin-top:.1rem; line-height:1.35; }
+        .pack-subbox { background:#f4f7f5; border:1px solid #dee5df; border-radius:6px; padding:.65rem .85rem; margin-bottom:.85rem; }
+        .pack-push-row label { font-size:.72rem; color:#5a6b5f; margin-bottom:.15rem; }
+        .sidebar-nav { border-top: 1px solid rgba(255,255,255,.14); padding-top: .75rem; margin-top: .35rem; margin-bottom: .75rem; }
+        .sidebar-jump { display: block; color: #c8e6d0; padding: .4rem .35rem; font-size: .875rem; text-decoration: none; border-radius: 4px; line-height: 1.3; }
+        .sidebar-jump:hover { color: #fff; background: rgba(255,255,255,.07); text-decoration: none; }
+        #hub-git, #hub-zip, #hub-ftp { scroll-margin-top: 12px; }
     </style>
 </head>
 <body class="d-flex flex-column flex-md-row">
@@ -757,15 +821,20 @@ if ($loggedIn && !$missingConfig) {
 <?php else: ?>
     <aside class="sidebar p-3">
         <div class="brand mb-1">GFM Deploy Hub</div>
-        <div class="small text-white-50 mb-4">Git · ZIP · FTP</div>
-        <div class="small"><a href="?logout=1" class="text-light">Sign out</a></div>
+        <div class="small text-white-50 mb-3">Git · ZIP · FTP</div>
+        <nav class="sidebar-nav" aria-label="Jump to section">
+            <a href="#hub-git" class="sidebar-jump">Git — sync &amp; save</a>
+            <a href="#hub-zip" class="sidebar-jump">Build ZIP</a>
+            <a href="#hub-ftp" class="sidebar-jump">Upload to server</a>
+        </nav>
+        <div class="small pt-2" style="border-top: 1px solid rgba(255,255,255,.14);"><a href="?logout=1" class="text-light">Sign out</a></div>
     </aside>
     <main class="flex-fill d-flex flex-column p-3 p-md-4" style="min-width:0;">
         <h1 class="h5 text-dark mb-3">Update hub</h1>
 
         <?php if ($banner !== null): ?>
         <div class="status-strip d-flex flex-wrap align-items-center">
-            <span class="mr-3"><strong>Branch</strong> <?= htmlspecialchars($banner['branch'], ENT_QUOTES, 'UTF-8') ?></span>
+            <span class="mr-3"><strong>Copy name</strong> <?= htmlspecialchars($banner['branch'], ENT_QUOTES, 'UTF-8') ?></span>
             <span class="mr-3"><strong>Commit</strong> <code><?= htmlspecialchars($banner['short'], ENT_QUOTES, 'UTF-8') ?></code></span>
             <span class="mr-3"><strong>Tree</strong>
                 <?php if ($isGit): ?>
@@ -777,7 +846,7 @@ if ($loggedIn && !$missingConfig) {
                     <span class="badge badge-secondary">not git</span>
                 <?php endif; ?>
             </span>
-            <span class="text-truncate" style="max-width:28rem;" title="<?= htmlspecialchars($banner['remote'], ENT_QUOTES, 'UTF-8') ?>"><strong>Remote</strong> <?= htmlspecialchars($banner['remote'], ENT_QUOTES, 'UTF-8') ?></span>
+            <span class="text-truncate" style="max-width:28rem;" title="<?= htmlspecialchars($banner['remote'], ENT_QUOTES, 'UTF-8') ?>"><strong>GitHub link</strong> <?= htmlspecialchars($banner['remote'], ENT_QUOTES, 'UTF-8') ?></span>
             <?php if ($isGit && $loggedIn): ?>
                 <span class="mr-3 ml-md-3"><strong>FTP gate</strong>
                     <span class="badge badge-<?= $deployGate['ok'] ? 'success' : 'danger' ?>" title="Git must match GitHub before server upload"><?= $deployGate['ok'] ? 'OK to deploy' : 'blocked' ?></span>
@@ -796,7 +865,7 @@ if ($loggedIn && !$missingConfig) {
             <h3 class="d-flex align-items-center flex-wrap">Deploy readiness
                 <span class="badge badge-<?= $deployGate['ok'] ? 'success' : 'secondary' ?> ml-2"><?= $deployGate['ok'] ? 'PASS' : 'FAIL' ?></span>
             </h3>
-            <p class="desc mb-2">FTP upload to your host is <strong>only allowed</strong> when all checks pass: no uncommitted changes, <code>git fetch</code> succeeds, your branch tracks a remote, and you are <strong>neither ahead nor behind</strong> that remote (same commits as GitHub). Otherwise the upload button stays disabled and the server step is blocked.</p>
+            <p class="desc mb-2">FTP upload is <strong>only allowed</strong> when everything matches: no unsaved files in this folder, the site can reach GitHub, and your computer is <strong>not behind or ahead</strong> of what’s online (same saves as GitHub). Otherwise the upload button stays off.</p>
             <ul class="small mb-3 pl-3">
                 <?php foreach ($deployGate['lines'] as $ln): ?>
                     <li><?= htmlspecialchars($ln, ENT_QUOTES, 'UTF-8') ?></li>
@@ -805,9 +874,9 @@ if ($loggedIn && !$missingConfig) {
             <p class="desc small mb-0">Fix any FAIL items (commit, push, pull, or set upstream), then <strong>refresh this page</strong> to re-run the check.</p>
         </div>
 
-        <div class="step">
-            <h3>1. Pull / fetch from GitHub</h3>
-            <p class="desc"><strong>Pull</strong> runs <code>git pull --ff-only</code> (fast-forward only). <strong>Fetch</strong> updates remote refs without merging — use before merging <code>origin/…</code> branches.</p>
+        <div class="step" id="hub-git">
+            <h3>1. Get the latest from GitHub</h3>
+            <p class="desc"><strong>Pull latest</strong> downloads anything new from your online repo into this folder (safe update). Use <strong>Check online</strong> if you only want to refresh what Git knows without changing files yet — usually you only need <strong>Pull latest</strong>.</p>
             <form method="post" class="d-inline mr-2">
                 <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="hub_action" value="pull">
@@ -816,113 +885,132 @@ if ($loggedIn && !$missingConfig) {
             <form method="post" class="d-inline">
                 <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="hub_action" value="fetch">
-                <button type="submit" class="btn btn-outline-secondary btn-sm" <?= $isGit ? '' : 'disabled' ?>>Fetch remotes</button>
+                <button type="submit" class="btn btn-outline-secondary btn-sm" <?= $isGit ? '' : 'disabled' ?>>Check online</button>
             </form>
         </div>
 
-        <div class="step">
-            <h3>2. Merge branches</h3>
-            <p class="desc">Merges another branch or remote tracking branch <strong>into your current branch</strong> with <code>git merge --no-edit</code>. If there are conflicts, resolve them in your editor/terminal, then use <strong>Continue merge</strong> here (uses a non-interactive editor for the merge commit).</p>
-            <form method="post" class="mb-2">
-                <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
-                <input type="hidden" name="hub_action" value="merge">
-                <div class="form-row align-items-end">
-                    <div class="form-group col-md-6 mb-2 mb-md-0">
-                        <label class="small mb-0" for="merge_ref">Branch / ref to merge in</label>
-                        <input type="text" name="merge_ref" id="merge_ref" class="form-control form-control-sm" placeholder="e.g. origin/main, develop" maxlength="200" <?= $isGit ? '' : 'disabled' ?>>
-                    </div>
-                    <div class="form-group col-md-3 mb-2 mb-md-0">
-                        <div class="custom-control custom-checkbox mt-4 pt-1">
-                            <input type="checkbox" class="custom-control-input" name="merge_no_ff" id="mnoff" value="1">
-                            <label class="custom-control-label small" for="mnoff"><code>--no-ff</code></label>
-                        </div>
-                    </div>
-                    <div class="form-group col-md-3 mb-0">
-                        <button type="submit" class="btn btn-primary btn-sm btn-block" <?= $isGit ? '' : 'disabled' ?>>Merge</button>
-                    </div>
-                </div>
-            </form>
-            <p class="desc small mb-2">While a merge is in progress (conflicts or stopped mid-merge):</p>
+        <?php if ($isGit && !empty($banner['merging'])): ?>
+        <div class="step border-warning" style="border-width:2px;">
+            <h3>Merge in progress</h3>
+            <p class="desc small mb-2">Git started combining changes (maybe from another tool). Finish here or cancel.</p>
             <div class="d-flex flex-wrap">
                 <form method="post" class="mr-2 mb-2">
                     <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                     <input type="hidden" name="hub_action" value="merge_continue">
-                    <button type="submit" class="btn btn-outline-success btn-sm" <?= ($isGit && !empty($banner['merging'])) ? '' : 'disabled' ?>>Continue merge</button>
+                    <button type="submit" class="btn btn-outline-success btn-sm">Continue merge</button>
                 </form>
                 <form method="post" class="mb-2">
                     <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                     <input type="hidden" name="hub_action" value="merge_abort">
-                    <button type="submit" class="btn btn-outline-danger btn-sm" <?= ($isGit && !empty($banner['merging'])) ? '' : 'disabled' ?> onclick="return confirm('Abort this merge?');">Abort merge</button>
+                    <button type="submit" class="btn btn-outline-danger btn-sm" onclick="return confirm('Abort this merge?');">Abort merge</button>
                 </form>
             </div>
         </div>
+        <?php endif; ?>
 
+        <?php
+        $canStep3Commit = $isGit && $hubWizardStep1;
+        ?>
         <div class="step">
-            <h3>3. Commit &amp; push (app files only)</h3>
-            <p class="desc">Stages: <code>src/</code>, <code>templates/</code>, <code>public/</code>, <code>deploy/</code>, <code>bootstrap.php</code>, Composer files — not <code>vendor/</code> or <code>.env</code>.</p>
+            <h3>2. Save your work &amp; send to GitHub</h3>
+            <p class="desc">Saves app files from this folder to Git and can copy them to GitHub: <code>src/</code>, <code>templates/</code>, <code>public/</code>, <code>deploy/</code>, <code>bootstrap.php</code>, Composer files — not <code>vendor/</code> or <code>.env</code>.</p>
+            <?php if ($isGit && !$hubWizardStep1): ?>
+                <p class="small text-muted mb-2"><strong>Locked</strong> — run <strong>Pull latest</strong> or <strong>Check online</strong> in step 1 successfully first (so we know you’re in sync before saving).</p>
+            <?php endif; ?>
             <form method="post" class="mb-2">
                 <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="hub_action" value="commit">
                 <div class="form-group mb-2">
-                    <input type="text" name="commit_msg" class="form-control form-control-sm" placeholder="Commit message" required maxlength="400">
+                    <input type="text" name="commit_msg" class="form-control form-control-sm" placeholder="Commit message" maxlength="400" <?= $canStep3Commit ? 'required' : 'disabled' ?>>
                 </div>
                 <div class="custom-control custom-checkbox mb-2">
-                    <input type="checkbox" class="custom-control-input" name="commit_push" id="cpush" value="1" checked>
-                    <label class="custom-control-label small" for="cpush">Also <code>git push</code> after commit</label>
+                    <input type="checkbox" class="custom-control-input" name="commit_push" id="cpush" value="1" checked <?= $canStep3Commit ? '' : 'disabled' ?>>
+                    <label class="custom-control-label small" for="cpush">Also upload saves to GitHub after committing</label>
                 </div>
-                <button type="submit" class="btn btn-success btn-sm" <?= $isGit ? '' : 'disabled' ?>>Commit &amp; push</button>
+                <button type="submit" class="btn btn-success btn-sm" <?= $canStep3Commit ? '' : 'disabled' ?>>Save &amp; push to GitHub</button>
             </form>
         </div>
 
-        <div class="step">
-            <h3>4. Build deploy ZIP</h3>
-            <p class="desc">Same as <code>php deploy/build.php</code>. Upload the ZIP to your host, then <code>composer install --no-dev</code> if needed.</p>
-            <form method="post">
+        <div class="step" id="hub-zip">
+            <h3>3. Build deploy ZIP</h3>
+            <p class="desc mb-2">Builds a file under <code>dist/</code> (same as <code>php deploy/build.php</code> from the project root). Most of the time choose <strong>Full site</strong>, download the ZIP, upload it to your host, then run <code>composer install --no-dev</code> on the server if you did not include <code>vendor</code>.</p>
+            <form method="post" id="pack-form">
                 <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="hub_action" value="pack">
-                <div class="form-group mb-2">
-                    <label class="small d-block">Package</label>
-                    <div class="custom-control custom-radio custom-control-inline">
+
+                <p class="pack-section-title">What should go in the package?</p>
+                <div class="pack-subbox pack-mode-list mb-2">
+                    <div class="custom-control custom-radio">
                         <input class="custom-control-input" type="radio" name="mode" id="pk_full" value="full" checked>
-                        <label class="custom-control-label small" for="pk_full">Full</label>
+                        <label class="custom-control-label" for="pk_full">
+                            <span class="pack-mode-line">Full site (recommended)</span>
+                            <span class="pack-mode-hint">A complete deploy ZIP of the app. Use this for a new server or when you want everything in one file.</span>
+                        </label>
                     </div>
-                    <div class="custom-control custom-radio custom-control-inline">
+                    <div class="custom-control custom-radio">
                         <input class="custom-control-input" type="radio" name="mode" id="pk_dm" value="delta_marker">
-                        <label class="custom-control-label small" for="pk_dm">Delta since marker</label>
+                        <label class="custom-control-label" for="pk_dm">
+                            <span class="pack-mode-line">Changed files since last marked deploy</span>
+                            <span class="pack-mode-hint">Smaller ZIP: only files changed since the commit stored in <code>.deploy/last-ref</code>. You must have used “remember this deploy” (marker) at least once before.</span>
+                        </label>
                     </div>
-                    <div class="custom-control custom-radio custom-control-inline">
+                    <div class="custom-control custom-radio">
                         <input class="custom-control-input" type="radio" name="mode" id="pk_d" value="delta">
-                        <label class="custom-control-label small" for="pk_d">Delta ref</label>
+                        <label class="custom-control-label" for="pk_d">
+                            <span class="pack-mode-line">Smaller ZIP vs a specific snapshot (advanced)</span>
+                            <span class="pack-mode-hint">Only if your workflow compares to a named snapshot on Git. Fill the box below only when this option is selected.</span>
+                        </label>
                     </div>
-                    <div class="custom-control custom-radio custom-control-inline">
+                    <div class="custom-control custom-radio">
                         <input class="custom-control-input" type="radio" name="mode" id="pk_m" value="mark_only">
-                        <label class="custom-control-label small" for="pk_m">Mark only</label>
+                        <label class="custom-control-label" for="pk_m">
+                            <span class="pack-mode-line">Remember this deploy only (no ZIP)</span>
+                            <span class="pack-mode-hint">Updates the saved commit in <code>.deploy/last-ref</code> so the next “since marker” build knows where to start. No archive is created.</span>
+                        </label>
                     </div>
                 </div>
-                <div class="form-group mb-2">
-                    <input type="text" name="since" class="form-control form-control-sm" placeholder="Delta ref: origin/main">
+
+                <div class="form-group mb-2" id="since_ref_wrap">
+                    <label class="small font-weight-bold mb-1" for="since_ref">Snapshot name (only if you chose “advanced” delta above)</label>
+                    <input type="text" name="since" id="since_ref" class="form-control form-control-sm" placeholder="Ask your developer — usually only for teams" maxlength="300" autocomplete="off">
+                    <span class="form-text text-muted small mb-0">Ignored for full, marker, and “remember only” modes.</span>
                 </div>
-                <div class="custom-control custom-checkbox mb-1">
-                    <input class="custom-control-input" type="checkbox" name="dry_run" id="pdr" value="1">
-                    <label class="custom-control-label small" for="pdr">Dry run (no ZIP)</label>
+
+                <p class="pack-section-title">Extra options</p>
+                <div class="pack-subbox mb-2">
+                    <div class="custom-control custom-checkbox mb-2">
+                        <input class="custom-control-input" type="checkbox" name="dry_run" id="pdr" value="1">
+                        <label class="custom-control-label small" for="pdr"><strong>Dry run</strong> — show what would be packaged; do not write a ZIP (not used with “remember only”).</label>
+                    </div>
+                    <div class="custom-control custom-checkbox mb-2">
+                        <input class="custom-control-input" type="checkbox" name="with_vendor" id="pwv" value="1">
+                        <label class="custom-control-label small" for="pwv"><strong>Include <code>vendor/</code></strong> — only applies to <em>Full site</em>. Leave off if the server runs Composer itself.</label>
+                    </div>
+                    <div class="custom-control custom-checkbox mb-0">
+                        <input class="custom-control-input" type="checkbox" name="mark" id="pmk" value="1">
+                        <label class="custom-control-label small" for="pmk"><strong>After a successful ZIP, remember this deploy</strong> — writes the current commit to <code>.deploy/last-ref</code> for future “since marker” builds.</label>
+                    </div>
                 </div>
-                <div class="custom-control custom-checkbox mb-1">
-                    <input class="custom-control-input" type="checkbox" name="with_vendor" id="pwv" value="1">
-                    <label class="custom-control-label small" for="pwv">Include vendor (full only)</label>
+
+                <p class="pack-section-title">Optional: push to Git after packaging</p>
+                <div class="pack-subbox mb-2">
+                    <div class="custom-control custom-checkbox mb-2">
+                        <input class="custom-control-input" type="checkbox" name="git_push" id="pgp" value="1">
+                        <label class="custom-control-label small" for="pgp"><strong>Run <code>git push</code> after the build</strong> — uses the remote and branch below (same as CLI <code>--push</code>).</label>
+                    </div>
+                    <div class="form-row pack-push-row mb-0">
+                        <div class="col-md-6 mb-2 mb-md-0">
+                            <label for="push_remote_in">Remote name</label>
+                            <input class="form-control form-control-sm" name="push_remote" id="push_remote_in" placeholder="origin" value="origin" autocomplete="off">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="push_branch_in">Line name (optional, advanced)</label>
+                            <input class="form-control form-control-sm" name="push_branch" id="push_branch_in" placeholder="Leave empty — only if you use more than one line of work" autocomplete="off">
+                        </div>
+                    </div>
                 </div>
-                <div class="custom-control custom-checkbox mb-1">
-                    <input class="custom-control-input" type="checkbox" name="mark" id="pmk" value="1">
-                    <label class="custom-control-label small" for="pmk">Update <code>.deploy/last-ref</code> after ZIP</label>
-                </div>
-                <div class="custom-control custom-checkbox mb-2">
-                    <input class="custom-control-input" type="checkbox" name="git_push" id="pgp" value="1">
-                    <label class="custom-control-label small" for="pgp">Git push after pack</label>
-                </div>
-                <div class="form-row mb-2">
-                    <div class="col-6"><input class="form-control form-control-sm" name="push_remote" placeholder="origin" value="origin"></div>
-                    <div class="col-6"><input class="form-control form-control-sm" name="push_branch" placeholder="branch (optional)"></div>
-                </div>
-                <button type="submit" class="btn btn-dark btn-sm">Build package</button>
+
+                <button type="submit" class="btn btn-dark btn-sm font-weight-bold">Build package</button>
             </form>
             <?php if ($zips !== []): ?>
                 <p class="small mt-3 mb-1"><strong>Downloads</strong></p>
@@ -934,14 +1022,14 @@ if ($loggedIn && !$missingConfig) {
             <?php endif; ?>
         </div>
 
-        <div class="step">
-            <h3>5. Upload to server (FTP)</h3>
+        <div class="step" id="hub-ftp">
+            <h3>4. Upload to server (FTP)</h3>
             <p class="desc">Uploads the <strong>newest</strong> file from <code>dist/gfm-deploy-*.zip</code> into your configured remote folder (same filename). Unzip on the host if your workflow uses a package file. Configure <code>ftp_*</code> keys in <code>config.local.php</code>.</p>
             <?php if (!$ftpConfigured): ?>
                 <div class="alert alert-warning py-2 small mb-2">Add <code>ftp_host</code>, <code>ftp_user</code>, <code>ftp_password</code>, and <code>ftp_remote_dir</code> to <code>deploy/web/config.local.php</code> (see <code>config.example.php</code>). Optional: <code>ftp_port</code> (default 21), <code>ftp_passive</code> (default true).</div>
             <?php endif; ?>
             <?php if ($zips === []): ?>
-                <p class="small text-muted mb-2">Build a ZIP in step 4 first — nothing to upload yet.</p>
+                <p class="small text-muted mb-2">Build a ZIP in step 3 first — nothing to upload yet.</p>
             <?php else: ?>
                 <p class="small mb-2">Next file: <code><?= htmlspecialchars(basename($zips[0]), ENT_QUOTES, 'UTF-8') ?></code></p>
             <?php endif; ?>
@@ -982,5 +1070,55 @@ if ($loggedIn && !$missingConfig) {
 <?php endif; ?>
 <script src="https://cdn.jsdelivr.net/npm/jquery@3.5.1/dist/jquery.slim.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+(function () {
+    function packSinceRefForMode() {
+        var checked = document.querySelector('#pack-form input[name="mode"]:checked');
+        var since = document.getElementById('since_ref');
+        var wrap = document.getElementById('since_ref_wrap');
+        if (!since) return;
+        var delta = checked && checked.value === 'delta';
+        since.disabled = !delta;
+        if (wrap) wrap.style.opacity = delta ? '1' : '0.62';
+    }
+    function packPushFields() {
+        var cb = document.getElementById('pgp');
+        var r = document.getElementById('push_remote_in');
+        var b = document.getElementById('push_branch_in');
+        if (!cb || !r || !b) return;
+        var on = cb.checked;
+        r.disabled = !on;
+        b.disabled = !on;
+    }
+    var form = document.getElementById('pack-form');
+    if (form) {
+        form.querySelectorAll('input[name="mode"]').forEach(function (el) {
+            el.addEventListener('change', packSinceRefForMode);
+        });
+        var pgp = document.getElementById('pgp');
+        if (pgp) pgp.addEventListener('change', packPushFields);
+        packSinceRefForMode();
+        packPushFields();
+    }
+})();
+(function () {
+    document.querySelectorAll('a.sidebar-jump[href^="#"]').forEach(function (a) {
+        a.addEventListener('click', function (e) {
+            var id = this.getAttribute('href').slice(1);
+            var el = document.getElementById(id);
+            if (!el) return;
+            e.preventDefault();
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            if (window.history && window.history.replaceState) {
+                history.replaceState(null, '', '#' + id);
+            }
+        });
+    });
+    if (window.location.hash) {
+        var t = document.querySelector(window.location.hash);
+        if (t) setTimeout(function () { t.scrollIntoView({ behavior: 'auto', block: 'start' }); }, 0);
+    }
+})();
+</script>
 </body>
 </html>
