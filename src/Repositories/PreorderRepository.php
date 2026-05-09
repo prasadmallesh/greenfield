@@ -97,6 +97,25 @@ final class PreorderRepository
         return $st->execute([':sbid' => $sbid]);
     }
 
+    /**
+     * Customer pre-order header: still flagged as preorder (not yet converted).
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findCustomerPreorderHeader(string $sbid): ?array
+    {
+        $st = $this->pdo->prepare(
+            'SELECT s.*, p.partynm FROM sale_data s
+            LEFT JOIN party_mast p ON s.partyid = p.partyid
+            WHERE s.sbid = :sb AND s.customer_invoice = \'1\' AND s.new_cust_invoice = \'1\'
+            LIMIT 1'
+        );
+        $st->execute([':sb' => $sbid]);
+        $row = $st->fetch(\PDO::FETCH_ASSOC);
+
+        return $row ?: null;
+    }
+
     private function quotedIntList(string $csv): string
     {
         $ids = array_filter(array_map('intval', explode(',', $csv)));

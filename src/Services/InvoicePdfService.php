@@ -33,18 +33,31 @@ final class InvoicePdfService
         $l->execute([':s' => $sbid]);
         $lines = $l->fetchAll(\PDO::FETCH_ASSOC) ?: [];
 
+        $ci = (string) ($head['customer_invoice'] ?? '0');
+        $nc = (string) ($head['new_cust_invoice'] ?? '0');
+        $isPreorder = $ci === '1' && $nc === '1';
+        $docHeading = $isPreorder ? 'Preorder / invoice draft' : 'Invoice';
+
         $pdf = new \TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
         $pdf->SetCreator('Greenfield msoft');
-        $pdf->SetTitle('Preorder ' . $sbid);
+        $pdf->SetTitle(($isPreorder ? 'Preorder ' : 'Invoice ') . $sbid);
         $pdf->setPrintHeader(false);
         $pdf->setPrintFooter(false);
         $pdf->AddPage();
         $pdf->SetFont('helvetica', 'B', 14);
-        $pdf->Write(0, 'Preorder / invoice draft', '', false, 'L', true);
+        $pdf->Write(0, $docHeading, '', false, 'L', true);
         $pdf->Ln(4);
         $pdf->SetFont('helvetica', '', 10);
         $pdf->Write(0, 'Bill: ' . $sbid, '', false, 'L', true);
         $pdf->Write(0, 'Party: ' . ($head['partynm'] ?? ''), '', false, 'L', true);
+        $pm = strtoupper(trim((string) ($head['paymode'] ?? '')));
+        $pdf->Write(0, 'Payment terms: ' . self::payModeLabel($pm), '', false, 'L', true);
+        $pdf->Write(0, 'Order date: ' . self::formatDateCell($head['sdate'] ?? null), '', false, 'L', true);
+        $pdf->Write(0, 'Delivery: ' . self::formatDateCell($head['deliverydt'] ?? null), '', false, 'L', true);
+        $note = trim((string) ($head['spnote'] ?? ''));
+        if ($note !== '') {
+            $pdf->Write(0, 'Note: ' . $note, '', false, 'L', true);
+        }
         $pdf->Ln(6);
         $html = '<table border="1" cellpadding="3"><thead><tr style="background-color:#0c6932;color:#fff;">
             <th>Product</th><th align="right">Qty</th><th align="right">Rate</th><th align="right">Amount</th></tr></thead><tbody>';
@@ -61,5 +74,32 @@ final class InvoicePdfService
         $pdf->Write(0, 'Total: ' . ($head['totamt'] ?? ''), '', false, 'R', true);
 
         return $pdf->Output('', 'S');
+    }
+
+    private static function formatDateCell(mixed $v): string
+    {
+        if ($v === null || $v === '') {
+            return '—';
+        }
+        $s = trim((string) $v);
+        if ($s === '' || str_starts_with($s, '0000')) {
+            return '—';
+        }
+        $t = strtotime($s);
+
+        return $t ? date('d/m/Y', $t) : $s;
+    }
+
+    private static function payModeLabel(string $code): string
+    {
+        $m = [
+            'D' => '7 DAYS',
+            'F' => '15 DAYS',
+            'C' => 'COD',
+            'I' => '1 IN 1 OUT',
+            'N' => 'NONE',
+        ];
+
+        return $m[$code] ?? ($code !== '' ? $code : '—');
     }
 }

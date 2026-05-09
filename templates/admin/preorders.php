@@ -37,7 +37,7 @@ $ut = (string) ($_SESSION['login_user_type'] ?? '');
 <div class="table-responsive">
 <table class="table table-sm table-striped table-bordered">
     <thead class="thead-light"><tr>
-        <th>Bill</th><th>Party</th><th>Amount</th><th>Pay mode</th><th>Order dt</th><th>Delivery</th><th>Type</th><th>PDF</th><th>Mark invoiced</th>
+        <th>Bill</th><th>Party</th><th>Amount</th><th>Pay mode</th><th>Order dt</th><th>Delivery</th><th>Type</th><th>PDF</th><th>Actions</th>
     </tr></thead>
     <tbody>
     <?php foreach ($rows as $r): ?>
@@ -58,10 +58,9 @@ $ut = (string) ($_SESSION['login_user_type'] ?? '');
             </td>
             <td>
                 <?php if (($r['sbid'] ?? '') !== ''): ?>
-                <form method="post" action="<?= htmlspecialchars($base . '/admin/preorders/convert', ENT_QUOTES, 'UTF-8') ?>" class="d-inline" onsubmit="return confirm('Mark this pre-order as converted to invoice?');">
-                    <input type="hidden" name="sbid" value="<?= htmlspecialchars((string)$r['sbid'], ENT_QUOTES, 'UTF-8') ?>">
-                    <button type="submit" class="btn btn-outline-secondary btn-sm">Convert</button>
-                </form>
+                    <a class="btn btn-outline-primary btn-sm" href="<?= htmlspecialchars($base . '/admin/preorders/' . rawurlencode((string)$r['sbid']) . '/edit', ENT_QUOTES, 'UTF-8') ?>">Edit</a>
+                <?php else: ?>
+                    <span class="text-muted small">—</span>
                 <?php endif; ?>
             </td>
         </tr>

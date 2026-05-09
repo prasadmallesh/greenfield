@@ -15,11 +15,13 @@ use App\Repositories\FuelRepository;
 use App\Repositories\PageSettingsRepository;
 use App\Repositories\PartyRepository;
 use App\Repositories\PreorderRepository;
+use App\Repositories\ProductMasterRepository;
 use App\Repositories\SaleAccessRepository;
 use App\Services\CustomerCheckoutService;
 use App\Services\CustomerDeliveryDateService;
 use App\Services\InvoicePdfService;
 use App\Services\MenuPermissionService;
+use App\Services\PreorderAdminService;
 use App\Services\SaleBillNumberService;
 use App\Support\HttpUtil;
 use App\View\PhpRenderer;
@@ -47,6 +49,8 @@ final class RouteRegistrar
         $deliverySvc = new CustomerDeliveryDateService();
         $checkoutSvc = new CustomerCheckoutService($pdo, $billSvc, $deliverySvc);
         $pdfSvc = new InvoicePdfService($pdo);
+        $productMaster = new ProductMasterRepository($pdo);
+        $preorderAdmin = new PreorderAdminService($pdo, $catRepo, $deliverySvc, $fuelRepo, $preorderRepo);
 
         $adminPub = [$base . '/admin/login', $base . '/admin/captcha'];
         $shopPub = [$base . '/shop', $base . '/shop/captcha'];
@@ -104,6 +108,10 @@ final class RouteRegistrar
             $catRepo,
             $pdfSvc,
             $saleAccess,
+            $fuelRepo,
+            $deliverySvc,
+            $preorderAdmin,
+            $productMaster,
         ): void {
             $group->get('/logout', function () use ($base) {
                 unset($_SESSION['login_user_id'], $_SESSION['login_user'], $_SESSION['login_user_type'], $_SESSION['login_payin'], $_SESSION['login_payout']);
@@ -158,11 +166,185 @@ final class RouteRegistrar
                 ]));
             });
 
-            $group->post('/preorders/convert', function (\Psr\Http\Message\ServerRequestInterface $req) use ($base, $preorderRepo) {
+            $toDmY = static function ($v): string {
+                if ($v === null || $v === '') {
+                    return date('d/m/Y');
+                }
+                $s = trim((string) $v);
+                if (preg_match('/^\d{1,2}\/\d{1,2}\/\d{4}$/', $s) === 1) {
+                    return $s;
+                }
+                $t = strtotime($s);
+
+                return $t ? date('d/m/Y', $t) : date('d/m/Y');
+            };
+
+            $parsePreorderLines = static function (array $p): array {
+                $j = trim((string) ($p['lines_json'] ?? ''));
+                $d = json_decode($j, true);
+                if (!is_array($d)) {
+                    return [];
+                }
+                $out = [];
+                foreach ($d as $row) {
+                    if (!is_array($row)) {
+                        continue;
+                    }
+                    $out[] = [
+                        'pid' => (int) ($row['pid'] ?? 0),
+                        'qty' => (float) ($row['qty'] ?? 0),
+                        'punit' => trim((string) ($row['punit'] ?? '')),
+                        'rate' => (float) ($row['rate'] ?? 0),
+                    ];
+                }
+
+                return $out;
+            };
+
+            $group->get('/preorders/{sbid}/edit', function (\Psr\Http\Message\ServerRequestInterface $req, \Psr\Http\Message\ResponseInterface $res, array $args) use (
+                $view,
+                $base,
+                $pageRepo,
+                $partyRepo,
+                $preorderAdmin,
+                $productMaster,
+                $fuelRepo,
+                $deliverySvc,
+                $saleAccess,
+                $toDmY,
+            ) {
+                $sbid = trim((string) ($args['sbid'] ?? ''));
+                $ut = (string) ($_SESSION['login_user_type'] ?? '');
+                $uid = (int) ($_SESSION['login_user_id'] ?? 0);
+                $csv = $ut === 'A' ? null : $partyRepo->partyIdsCsvForUser($uid);
+                if (!$saleAccess->staffCanAccessSale($ut, $uid, $csv, $sbid)) {
+                    return HttpUtil::html('Forbidden', 403);
+                }
+                $data = $preorderAdmin->loadEditablePreorder($sbid);
+                if ($data === null) {
+                    return HttpUtil::redirect($base . '/admin/preorders');
+                }
+                $menu = new MenuPermissionService($pageRepo);
+                $flash = $_SESSION['preorder_edit_flash'] ?? ['type' => '', 'msg' => ''];
+                unset($_SESSION['preorder_edit_flash']);
+                $h = $data['header'];
+                $invdt = $toDmY($h['sdate'] ?? '');
+                $dvSel = $toDmY($h['deliverydt'] ?? '');
+                $cur = date('Y-m-d', strtotime('+0 days'));
+                $end = date('Y-m-d', strtotime('+20 days'));
+                $dvopts = $deliverySvc->displayDateOptions($cur, $end);
+                if ($dvopts !== [] && !array_key_exists($dvSel, $dvopts)) {
+                    $first = array_key_first($dvopts);
+                    $dvSel = $first !== null ? $first : $invdt;
+                }
+                if ($dvopts === []) {
+                    $dvopts = [$invdt => 'Today'];
+                    $dvSel = $invdt;
+                }
+
+                return HttpUtil::html($view->render('admin/preorder_edit', [
+                    'base' => $base,
+                    'menu' => $menu,
+                    'sbid' => $sbid,
+                    'header' => $h,
+                    'lines' => $data['lines'],
+                    'products' => $productMaster->listAll(2000),
+                    'fuel' => $fuelRepo->activeFuelRows(),
+                    'dvopts' => $dvopts,
+                    'payOpts' => PreorderAdminService::payModeOptions(),
+                    'invdt' => $invdt,
+                    'dvSelected' => $dvSel,
+                    'flashMsg' => (string) ($flash['msg'] ?? ''),
+                    'flashType' => (string) ($flash['type'] ?? ''),
+                ]));
+            });
+
+            $group->post('/preorders/{sbid}/modify', function (\Psr\Http\Message\ServerRequestInterface $req, \Psr\Http\Message\ResponseInterface $res, array $args) use (
+                $base,
+                $partyRepo,
+                $preorderAdmin,
+                $saleAccess,
+                $parsePreorderLines,
+            ) {
+                $sbid = trim((string) ($args['sbid'] ?? ''));
+                $ut = (string) ($_SESSION['login_user_type'] ?? '');
+                $uid = (int) ($_SESSION['login_user_id'] ?? 0);
+                $csv = $ut === 'A' ? null : $partyRepo->partyIdsCsvForUser($uid);
+                if (!$saleAccess->staffCanAccessSale($ut, $uid, $csv, $sbid)) {
+                    return HttpUtil::html('Forbidden', 403);
+                }
                 $p = (array) $req->getParsedBody();
-                $sbid = trim((string) ($p['sbid'] ?? ''));
-                if ($sbid !== '') {
-                    $preorderRepo->markPreorderConvertedToInvoice($sbid);
+                $lines = $parsePreorderLines($p);
+                $err = $preorderAdmin->savePreorder(
+                    $sbid,
+                    trim((string) ($p['invdt'] ?? '')),
+                    trim((string) ($p['paymode'] ?? 'C')),
+                    (string) ($p['spnote'] ?? ''),
+                    trim((string) ($p['dvdt'] ?? '')),
+                    $lines,
+                    false,
+                );
+                if ($err !== '') {
+                    $_SESSION['preorder_edit_flash'] = ['type' => 'err', 'msg' => $err];
+                } else {
+                    $_SESSION['preorder_edit_flash'] = ['type' => 'ok', 'msg' => 'Pre-order updated.'];
+                }
+
+                return HttpUtil::redirect($base . '/admin/preorders/' . rawurlencode($sbid) . '/edit');
+            });
+
+            $group->post('/preorders/{sbid}/finalize', function (\Psr\Http\Message\ServerRequestInterface $req, \Psr\Http\Message\ResponseInterface $res, array $args) use (
+                $base,
+                $partyRepo,
+                $preorderAdmin,
+                $saleAccess,
+                $parsePreorderLines,
+            ) {
+                $sbid = trim((string) ($args['sbid'] ?? ''));
+                $ut = (string) ($_SESSION['login_user_type'] ?? '');
+                $uid = (int) ($_SESSION['login_user_id'] ?? 0);
+                $csv = $ut === 'A' ? null : $partyRepo->partyIdsCsvForUser($uid);
+                if (!$saleAccess->staffCanAccessSale($ut, $uid, $csv, $sbid)) {
+                    return HttpUtil::html('Forbidden', 403);
+                }
+                $p = (array) $req->getParsedBody();
+                $lines = $parsePreorderLines($p);
+                $err = $preorderAdmin->savePreorder(
+                    $sbid,
+                    trim((string) ($p['invdt'] ?? '')),
+                    trim((string) ($p['paymode'] ?? 'C')),
+                    (string) ($p['spnote'] ?? ''),
+                    trim((string) ($p['dvdt'] ?? '')),
+                    $lines,
+                    true,
+                );
+                if ($err !== '') {
+                    $_SESSION['preorder_edit_flash'] = ['type' => 'err', 'msg' => $err];
+
+                    return HttpUtil::redirect($base . '/admin/preorders/' . rawurlencode($sbid) . '/edit');
+                }
+
+                return HttpUtil::redirect($base . '/admin/invoices/' . rawurlencode($sbid) . '/created');
+            });
+
+            $group->post('/preorders/{sbid}/delete', function (\Psr\Http\Message\ServerRequestInterface $req, \Psr\Http\Message\ResponseInterface $res, array $args) use (
+                $base,
+                $partyRepo,
+                $preorderAdmin,
+                $saleAccess,
+            ) {
+                $sbid = trim((string) ($args['sbid'] ?? ''));
+                $ut = (string) ($_SESSION['login_user_type'] ?? '');
+                $uid = (int) ($_SESSION['login_user_id'] ?? 0);
+                $csv = $ut === 'A' ? null : $partyRepo->partyIdsCsvForUser($uid);
+                if (!$saleAccess->staffCanAccessSale($ut, $uid, $csv, $sbid)) {
+                    return HttpUtil::html('Forbidden', 403);
+                }
+                $err = $preorderAdmin->deletePreorder($sbid);
+                if ($err !== '') {
+                    $_SESSION['preorder_edit_flash'] = ['type' => 'err', 'msg' => $err];
+
+                    return HttpUtil::redirect($base . '/admin/preorders/' . rawurlencode($sbid) . '/edit');
                 }
 
                 return HttpUtil::redirect($base . '/admin/preorders');
@@ -196,6 +378,25 @@ final class RouteRegistrar
             });
 
             AdminMasterRoutes::register($group, $view, $base, $pdo, $pageRepo, $partyRepo);
+
+            $group->get('/invoices/{sbid}/created', function (\Psr\Http\Message\ServerRequestInterface $req, \Psr\Http\Message\ResponseInterface $res, array $args) use ($view, $base, $pageRepo, $partyRepo, $saleAccess) {
+                $sbid = (string) ($args['sbid'] ?? '');
+                $ut = (string) ($_SESSION['login_user_type'] ?? '');
+                $uid = (int) ($_SESSION['login_user_id'] ?? 0);
+                $csv = $ut === 'A' ? null : $partyRepo->partyIdsCsvForUser($uid);
+                if (!$saleAccess->staffCanAccessSale($ut, $uid, $csv, $sbid)) {
+                    return HttpUtil::html('Forbidden', 403);
+                }
+                $menu = new MenuPermissionService($pageRepo);
+                $pdfUrl = $base . '/admin/invoices/' . rawurlencode($sbid) . '/pdf';
+
+                return HttpUtil::html($view->render('admin/invoice_created', [
+                    'base' => $base,
+                    'menu' => $menu,
+                    'sbid' => $sbid,
+                    'pdfUrl' => $pdfUrl,
+                ]));
+            });
 
             $group->get('/invoices/{sbid}/pdf', function (\Psr\Http\Message\ServerRequestInterface $req, \Psr\Http\Message\ResponseInterface $res, array $args) use ($base, $pdfSvc, $partyRepo, $saleAccess) {
                 $sbid = (string) ($args['sbid'] ?? '');
