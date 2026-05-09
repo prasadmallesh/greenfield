@@ -237,7 +237,7 @@ function deploy_git_ref_safe(string $value): bool
 {
     $value = trim($value);
 
-    return $value !== '' && preg_match('/^[a-zA-Z0-9_./-]+$/', $value) === 1;
+    return $value !== '' && preg_match('#^[a-zA-Z0-9_./-]+$#', $value) === 1;
 }
 
 function deploy_git_push(string $projectRoot, string $remote, ?string $branch): bool
@@ -376,7 +376,8 @@ function collect_full_paths(string $root, bool $withVendor): array
  */
 function collect_delta_paths(string $root, string $since): array
 {
-    if (!preg_match('/^[a-zA-Z0-9_^./~@-]+$/', $since)) {
+    // Delimiter must not be `/` — refs like `origin/main` contain slashes.
+    if (!preg_match('#^[a-zA-Z0-9_^./~@+-]+$#', $since)) {
         fwrite(STDERR, "Unsafe or invalid --since ref.\n");
         exit(1);
     }
