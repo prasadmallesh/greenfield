@@ -146,7 +146,7 @@ final class BillSettlementService
                 SELECT pcsbid, SUM(cramt) AS total_cramt FROM sale_payment_data GROUP BY pcsbid
             ) ap ON s.sbid = ap.pcsbid
             WHERE s.partyid = :p AND s.ccredit = \'1\'
-            HAVING ROUND(s.totamt, 2) <> ROUND(COALESCE(ap.total_cramt, 0), 2)
+            AND ROUND(s.totamt, 2) <> ROUND(COALESCE(ap.total_cramt, 0), 2)
             ORDER BY s.sbid ASC';
         $st = $this->pdo->prepare($sql);
         $st->execute([':p' => $partyId]);
