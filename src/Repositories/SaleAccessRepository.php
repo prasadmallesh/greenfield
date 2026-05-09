@@ -49,4 +49,25 @@ final class SaleAccessRepository
 
         return $pid !== null && $pid === $customerPartyId;
     }
+
+    /** Non-admin: party must appear in the user's assigned party CSV. */
+    public function staffCanAccessParty(string $userType, int $userId, ?string $partyIdsCsv, int $partyId): bool
+    {
+        if ($partyId <= 0) {
+            return $userType === 'A';
+        }
+        if ($userType === 'A') {
+            return true;
+        }
+        if ($partyIdsCsv === null || $partyIdsCsv === '') {
+            return false;
+        }
+        foreach (array_map('intval', explode(',', $partyIdsCsv)) as $allowed) {
+            if ($allowed === $partyId) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }

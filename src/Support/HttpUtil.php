@@ -30,4 +30,15 @@ final class HttpUtil
 
         return $r->withHeader('Content-Type', 'text/plain; charset=UTF-8');
     }
+
+    /** @param array<string, mixed> $data */
+    public static function json(array $data, int $status = 200): ResponseInterface
+    {
+        $r = new Response($status);
+        $r = $r->withHeader('Content-Type', 'application/json; charset=UTF-8');
+        $enc = json_encode($data);
+        $r->getBody()->write($enc !== false ? $enc : '{}');
+
+        return $r;
+    }
 }

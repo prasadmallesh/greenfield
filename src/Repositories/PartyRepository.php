@@ -73,6 +73,34 @@ final class PartyRepository
     /**
      * @return list<array<string, mixed>>
      */
+    public function listPartiesScoped(int $uid, string $userType): array
+    {
+        if ($userType === 'A') {
+            return $this->listPartiesForSelect();
+        }
+        $st = $this->pdo->prepare(
+            "SELECT partyid, partynm FROM party_mast WHERE uid = :u AND is_active = '1' ORDER BY partynm ASC LIMIT 2000"
+        );
+        $st->execute([':u' => $uid]);
+
+        return $st->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function listCustomersForSelect(): array
+    {
+        $st = $this->pdo->query(
+            'SELECT custid, custname, custcode FROM customer_mast ORDER BY custname ASC LIMIT 2000'
+        );
+
+        return $st->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
     public function listUsersForSelect(): array
     {
         $st = $this->pdo->query(

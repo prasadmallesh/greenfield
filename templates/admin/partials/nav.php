@@ -54,7 +54,9 @@ $payout = (int) ($_SESSION['login_payout'] ?? 0);
                     <?php if ($isAdmin || $menu->isActiveAtIndex(6)): ?><span class="dropdown-item text-muted">Previous Balance (soon)</span><?php endif; ?>
                     <?php if ($isAdmin || $menu->isActiveAtIndex(7)): ?><span class="dropdown-item text-muted">Party Credit (soon)</span><?php endif; ?>
                     <?php if ($isAdmin || $menu->isActiveAtIndex(15)): ?><span class="dropdown-item text-muted">Create Invoice (soon)</span><?php endif; ?>
-                    <?php if ($isAdmin): ?><span class="dropdown-item text-muted">Settlement / notes (soon)</span><?php endif; ?>
+                    <?php if ($isAdmin || $menu->isActiveAtIndex(6) || $menu->isActiveAtIndex(7) || $menu->isActiveAtIndex(15)): ?>
+                        <a class="dropdown-item" href="<?= htmlspecialchars($base . '/admin/bill-settlement', ENT_QUOTES, 'UTF-8') ?>">Bill settlement</a>
+                    <?php endif; ?>
                 </div>
             </li>
             <?php endif; ?>

@@ -19,6 +19,7 @@ use App\Repositories\ProductMasterRepository;
 use App\Repositories\SaleAccessRepository;
 use App\Services\CustomerCheckoutService;
 use App\Services\CustomerDeliveryDateService;
+use App\Services\BillSettlementService;
 use App\Services\InvoicePdfService;
 use App\Services\MenuPermissionService;
 use App\Services\PreorderAdminService;
@@ -51,6 +52,7 @@ final class RouteRegistrar
         $pdfSvc = new InvoicePdfService($pdo);
         $productMaster = new ProductMasterRepository($pdo);
         $preorderAdmin = new PreorderAdminService($pdo, $catRepo, $deliverySvc, $fuelRepo, $preorderRepo);
+        $billSettlement = new BillSettlementService($pdo);
 
         $adminPub = [$base . '/admin/login', $base . '/admin/captcha'];
         $shopPub = [$base . '/shop', $base . '/shop/captcha'];
@@ -112,6 +114,7 @@ final class RouteRegistrar
             $deliverySvc,
             $preorderAdmin,
             $productMaster,
+            $billSettlement,
         ): void {
             $group->get('/logout', function () use ($base) {
                 unset($_SESSION['login_user_id'], $_SESSION['login_user'], $_SESSION['login_user_type'], $_SESSION['login_payin'], $_SESSION['login_payout']);
@@ -416,6 +419,167 @@ final class RouteRegistrar
                 } catch (\Throwable $e) {
                     return HttpUtil::html('PDF error: ' . htmlspecialchars($e->getMessage(), \ENT_QUOTES, 'UTF-8'), 500);
                 }
+            });
+
+            $group->get('/bill-settlement', function (\Psr\Http\Message\ServerRequestInterface $req) use (
+                $view,
+                $base,
+                $pageRepo,
+                $partyRepo,
+                $billSettlement,
+                $saleAccess,
+            ) {
+                $menu = new MenuPermissionService($pageRepo);
+                $ut = (string) ($_SESSION['login_user_type'] ?? '');
+                $uid = (int) ($_SESSION['login_user_id'] ?? 0);
+                $invAny = $menu->isActiveAtIndex(6) || $menu->isActiveAtIndex(7) || $menu->isActiveAtIndex(15);
+                if ($ut !== 'A' && !$invAny) {
+                    return HttpUtil::html('Forbidden', 403);
+                }
+                $q = $req->getQueryParams();
+                $pmode = isset($q['pmode']) ? (string) $q['pmode'] : 'P';
+                if ($pmode !== 'C') {
+                    $pmode = 'P';
+                }
+                $fdt = isset($q['fdt']) ? (string) $q['fdt'] : '';
+                $tdt = isset($q['tdt']) ? (string) $q['tdt'] : '';
+                $pid = isset($q['pid']) ? (int) $q['pid'] : 0;
+                $cid = isset($q['cid']) ? (int) $q['cid'] : 0;
+                $svRaw = isset($q['sv']) ? (string) $q['sv'] : '';
+                $sv = '';
+                if ($svRaw !== '') {
+                    $sv = 'GREEN' . str_replace('GREEN', '', strtoupper(trim($svRaw)));
+                }
+                $csv = $ut === 'A' ? null : $partyRepo->partyIdsCsvForUser($uid);
+                $tarr = [];
+                if ($fdt !== '' || $tdt !== '' || $pid > 0 || $cid > 0 || $sv !== '') {
+                    $tarr = $billSettlement->getOutstandingInvoiceRows($fdt, $tdt, $pid, $cid, $sv, $csv);
+                    $tarr = array_values(array_filter($tarr, static function (array $r) use ($saleAccess, $ut, $uid, $csv): bool {
+                        return $saleAccess->staffCanAccessParty($ut, $uid, $csv, (int) ($r['partyid'] ?? 0));
+                    }));
+                    if ($sv !== '' && $tarr !== [] && isset($tarr[0]['partyid'])) {
+                        $pid = (int) $tarr[0]['partyid'];
+                    }
+                }
+                $crparr = [];
+                if ($pid > 0) {
+                    if (!$saleAccess->staffCanAccessParty($ut, $uid, $csv, $pid)) {
+                        return HttpUtil::html('Forbidden', 403);
+                    }
+                    $crparr = $billSettlement->listPartyCreditInvoices($pid);
+                }
+                $partyRows = $partyRepo->listPartiesScoped($uid, $ut);
+                $custRows = $ut === 'A' ? $partyRepo->listCustomersForSelect() : [];
+                $contact = $pid > 0 ? $partyRepo->getPartyCustomerByPartyId($pid) : [];
+                $addr = '';
+                $cperson = '';
+                $cmob = '';
+                $cemail = '';
+                if ($contact !== []) {
+                    $c0 = $contact[0];
+                    $addr = trim((string) ($c0['address'] ?? '') . (($c0['city'] ?? '') !== '' ? ', ' . (string) $c0['city'] : '') . (($c0['state'] ?? '') !== '' ? ', ' . (string) $c0['state'] : ''));
+                    $cperson = (string) ($c0['cpersonm'] ?? '');
+                    $cmob = (string) ($c0['contactno'] ?? '');
+                    $cemail = strtolower((string) ($c0['email'] ?? ''));
+                }
+                $pbrow = $billSettlement->getOpeningBalanceRow($pmode, $pid, $cid);
+                $pbEntry = null;
+                if ($pbrow !== null) {
+                    if ($pmode === 'P' && $pid > 0 && $saleAccess->staffCanAccessParty($ut, $uid, $csv, $pid)) {
+                        $pbEntry = $pbrow;
+                    }
+                    if ($pmode === 'C' && $cid > 0 && $ut === 'A') {
+                        $pbEntry = $pbrow;
+                    }
+                }
+                $flash = $_SESSION['bill_settlement_flash'] ?? ['type' => '', 'msg' => ''];
+                unset($_SESSION['bill_settlement_flash']);
+
+                return HttpUtil::html($view->render('admin/bill_settlement', [
+                    'base' => $base,
+                    'menu' => $menu,
+                    'ptyarr' => BillSettlementService::settlementPayModeOptions(),
+                    'pmode' => $pmode,
+                    'fdt' => $fdt,
+                    'tdt' => $tdt,
+                    'pid' => $pid,
+                    'cid' => $cid,
+                    'sv' => $svRaw,
+                    'tarr' => $tarr,
+                    'crparr' => $crparr,
+                    'partyRows' => $partyRows,
+                    'custRows' => $custRows,
+                    'paddress' => $addr,
+                    'cperson' => $cperson,
+                    'cmobno' => $cmob,
+                    'cpemail' => $cemail,
+                    'pbEntry' => $pbEntry,
+                    'flashMsg' => (string) ($flash['msg'] ?? ''),
+                    'flashType' => (string) ($flash['type'] ?? ''),
+                ]));
+            });
+
+            $group->get('/bill-settlement/api/credit', function (\Psr\Http\Message\ServerRequestInterface $req) use ($base, $partyRepo, $billSettlement, $saleAccess) {
+                $ut = (string) ($_SESSION['login_user_type'] ?? '');
+                $uid = (int) ($_SESSION['login_user_id'] ?? 0);
+                $csv = $ut === 'A' ? null : $partyRepo->partyIdsCsvForUser($uid);
+                $q = $req->getQueryParams();
+                $sbid = strtoupper(trim((string) ($q['sbid'] ?? '')));
+                if ($sbid === '') {
+                    return HttpUtil::json(['price' => '0.00'], 400);
+                }
+                $pid = $saleAccess->partyIdForSale($sbid);
+                if ($pid === null || !$saleAccess->staffCanAccessParty($ut, $uid, $csv, $pid)) {
+                    return HttpUtil::json(['price' => '0.00'], 403);
+                }
+                $price = number_format($billSettlement->getRemainingCreditOnInvoice($sbid), 2, '.', '');
+
+                return HttpUtil::json(['price' => $price]);
+            });
+
+            $group->post('/bill-settlement/save', function (\Psr\Http\Message\ServerRequestInterface $req) use ($base, $partyRepo, $billSettlement, $saleAccess) {
+                $ut = (string) ($_SESSION['login_user_type'] ?? '');
+                $uid = (int) ($_SESSION['login_user_id'] ?? 0);
+                $csv = $ut === 'A' ? null : $partyRepo->partyIdsCsvForUser($uid);
+                $p = (array) $req->getParsedBody();
+                $chk = $p['chk'] ?? [];
+                if (!is_array($chk)) {
+                    $chk = $chk !== null && $chk !== '' ? [$chk] : [];
+                }
+                $modearr = is_array($p['pbmode'] ?? null) ? $p['pbmode'] : [];
+                foreach ($chk as $keyRaw) {
+                    $key = (string) $keyRaw;
+                    $mode = (string) ($modearr[$key] ?? '');
+                    if ($mode === 'IV') {
+                        $spid = $saleAccess->partyIdForSale($key);
+                        if ($spid === null || !$saleAccess->staffCanAccessParty($ut, $uid, $csv, $spid)) {
+                            return HttpUtil::html('Forbidden', 403);
+                        }
+                    }
+                }
+                $ctype = '';
+                if (!empty($p['ctype']) && is_array($p['ctype'])) {
+                    $ctype = (string) $p['ctype'][0];
+                }
+                $partyid = (int) (!empty($p['pname']) ? $p['pname'] : ($p['hd_partynm'] ?? 0));
+                if ($ctype === 'P' && !$saleAccess->staffCanAccessParty($ut, $uid, $csv, $partyid)) {
+                    return HttpUtil::html('Forbidden', 403);
+                }
+                if ($ctype === 'C' && $ut !== 'A') {
+                    return HttpUtil::html('Forbidden', 403);
+                }
+
+                $n = $billSettlement->saveFromPost($p);
+                $_SESSION['bill_settlement_flash'] = [
+                    'type' => str_contains((string) $n['msg'], 'Successfully') ? 'ok' : 'err',
+                    'msg' => (string) $n['msg'],
+                ];
+                $pidR = (int) ($n['partyid'] ?? 0);
+                $cidR = (int) ($n['custid'] ?? 0);
+                $pm = (string) ($n['ctype'] ?? 'P') === 'C' ? 'C' : 'P';
+                $q = $pm === 'P' && $pidR > 0 ? '?pmode=P&pid=' . $pidR : ($pm === 'C' && $cidR > 0 ? '?pmode=C&cid=' . $cidR : '?pmode=P');
+
+                return HttpUtil::redirect($base . '/admin/bill-settlement' . $q);
             });
 
             $group->get('/reports', function () use ($view, $base, $pageRepo) {
