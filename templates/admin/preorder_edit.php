@@ -18,6 +18,17 @@ $payCurrent = strtoupper(trim((string) ($header['paymode'] ?? 'C')));
 $spnote = (string) ($header['spnote'] ?? '');
 $partyNm = (string) ($header['partynm'] ?? '');
 
+/** @param array<string, mixed> $ln */
+$lineUnitDisplay = static function (array $ln): string {
+    $u = strtoupper(trim((string) ($ln['punit'] ?? '')));
+    if ($u !== '' && $u !== '0') {
+        return $u;
+    }
+    $d = strtoupper(trim((string) ($ln['default_punit'] ?? '')));
+
+    return $d !== '' ? $d : 'KG';
+};
+
 ob_start();
 ?>
 <h1 class="h4 mb-3">Update pre-order — <?= htmlspecialchars($sbid, ENT_QUOTES, 'UTF-8') ?></h1>
@@ -50,6 +61,9 @@ ob_start();
     </div>
 
     <p class="small font-weight-bold text-secondary mb-1">Line items</p>
+    <style>
+        .line-qty, .line-rate { max-width: 7rem; }
+    </style>
     <div class="table-responsive mb-2">
         <table class="table table-sm table-bordered bg-white" id="line-table">
             <thead class="thead-light">
@@ -75,9 +89,9 @@ ob_start();
                             <?php endforeach; ?>
                         </select>
                     </td>
-                    <td><input type="number" step="0.01" class="form-control form-control-sm line-qty" required value="<?= htmlspecialchars((string)($ln['qty'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"></td>
-                    <td><input type="text" class="form-control form-control-sm line-punit text-uppercase" required maxlength="12" value="<?= htmlspecialchars((string)($ln['punit'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"></td>
-                    <td><input type="number" step="0.01" class="form-control form-control-sm line-rate" required value="<?= htmlspecialchars((string)($ln['rate'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"></td>
+                    <td><input type="text" inputmode="decimal" class="form-control form-control-sm line-qty" required autocomplete="off" value="<?= htmlspecialchars(rtrim(rtrim(sprintf('%.4f', (float) ($ln['qty'] ?? 0)), '0'), '.') ?: '0', ENT_QUOTES, 'UTF-8') ?>"></td>
+                    <td><input type="text" class="form-control form-control-sm line-punit text-uppercase" required maxlength="12" value="<?= htmlspecialchars($lineUnitDisplay($ln), ENT_QUOTES, 'UTF-8') ?>"></td>
+                    <td><input type="text" inputmode="decimal" class="form-control form-control-sm line-rate" required autocomplete="off" value="<?= htmlspecialchars(rtrim(rtrim(sprintf('%.4f', (float) ($ln['rate'] ?? 0)), '0'), '.') ?: '0', ENT_QUOTES, 'UTF-8') ?>"></td>
                     <td><button type="button" class="btn btn-sm btn-outline-danger line-del" title="Remove">×</button></td>
                 </tr>
             <?php endforeach; ?>
@@ -127,9 +141,9 @@ ob_start();
                 <?php endforeach; ?>
             </select>
         </td>
-        <td><input type="number" step="0.01" class="form-control form-control-sm line-qty" required value="1"></td>
+        <td><input type="text" inputmode="decimal" class="form-control form-control-sm line-qty" required autocomplete="off" value="1"></td>
         <td><input type="text" class="form-control form-control-sm line-punit text-uppercase" required maxlength="12" value="KG"></td>
-        <td><input type="number" step="0.01" class="form-control form-control-sm line-rate" required value="0"></td>
+        <td><input type="text" inputmode="decimal" class="form-control form-control-sm line-rate" required autocomplete="off" value="0"></td>
         <td><button type="button" class="btn btn-sm btn-outline-danger line-del" title="Remove">×</button></td>
     </tr>
 </template>
@@ -140,6 +154,12 @@ ob_start();
     var tpl = document.getElementById('line-row-template');
     var jsonField = document.getElementById('lines_json');
     var form = document.getElementById('preorder-edit-form');
+
+    function parseNum(s) {
+        if (s === null || s === undefined) return NaN;
+        var t = String(s).trim().replace(',', '.');
+        return parseFloat(t);
+    }
 
     function bindRow(tr) {
         tr.querySelectorAll('.line-del').forEach(function (btn) {
@@ -155,15 +175,24 @@ ob_start();
         if (sel) {
             sel.addEventListener('change', function () {
                 var opt = sel.options[sel.selectedIndex];
-                var pu = opt.getAttribute('data-punit') || 'KG';
+                var pu = (opt && opt.getAttribute('data-punit')) || 'KG';
                 var inp = tr.querySelector('.line-punit');
-                if (inp && !inp.dataset.userEdited) inp.value = pu;
+                if (inp) inp.value = pu;
             });
         }
-        var puIn = tr.querySelector('.line-punit');
-        if (puIn) puIn.addEventListener('input', function () { puIn.dataset.userEdited = '1'; });
     }
-    tbody.querySelectorAll('.line-row').forEach(bindRow);
+    tbody.querySelectorAll('.line-row').forEach(function (tr) {
+        bindRow(tr);
+        var sel = tr.querySelector('.line-pid');
+        var puIn = tr.querySelector('.line-punit');
+        if (sel && puIn) {
+            var v = (puIn.value || '').trim().toUpperCase();
+            if (v === '' || v === '0') {
+                var opt = sel.options[sel.selectedIndex];
+                puIn.value = (opt && opt.getAttribute('data-punit')) || 'KG';
+            }
+        }
+    });
 
     document.getElementById('btn-add-line').onclick = function () {
         var node = tpl.content.cloneNode(true);
@@ -177,9 +206,9 @@ ob_start();
         var out = [];
         rows.forEach(function (tr) {
             var pid = parseInt(tr.querySelector('.line-pid').value, 10);
-            var qty = parseFloat(tr.querySelector('.line-qty').value);
+            var qty = parseNum(tr.querySelector('.line-qty').value);
             var punit = (tr.querySelector('.line-punit').value || '').trim().toUpperCase();
-            var rate = parseFloat(tr.querySelector('.line-rate').value);
+            var rate = parseNum(tr.querySelector('.line-rate').value);
             if (pid > 0 && qty > 0 && punit && rate > 0) {
                 out.push({ pid: pid, qty: qty, punit: punit, rate: rate });
             }

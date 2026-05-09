@@ -687,7 +687,7 @@ if ($loggedIn && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['
             } elseif ($mode === 'delta_marker') {
                 $refFile = $projectRoot . DIRECTORY_SEPARATOR . '.deploy' . DIRECTORY_SEPARATOR . 'last-ref';
                 if (!is_readable($refFile)) {
-                    $runError = 'No .deploy/last-ref yet — use “Mark deploy” in the packager once or run mark-only from CLI.';
+                    $runError = 'No deploy marker yet (.deploy/last-ref is missing). A full ZIP yesterday does not create that file unless you checked “After a successful ZIP, remember this deploy”. Fix: (1) Choose “Remember this deploy only (no ZIP)” and Build once — that saves today’s commit as the baseline for future deltas; or (2) use “Smaller ZIP vs a specific snapshot” and type a Git ref (e.g. a commit hash from before your changes); or (3) run another Full ZIP with “remember this deploy” checked after it succeeds.';
                 } else {
                     $ref = trim((string) file_get_contents($refFile));
                     if ($ref === '') {
@@ -750,6 +750,9 @@ if ($loggedIn && !$missingConfig) {
         $deployGate = ['ok' => false, 'lines' => ['Not a git repository — connect this folder to git first. FTP upload is disabled.']];
     }
 }
+
+$deployLastRefPath = $projectRoot . DIRECTORY_SEPARATOR . '.deploy' . DIRECTORY_SEPARATOR . 'last-ref';
+$deployLastRefOk = $loggedIn && is_readable($deployLastRefPath) && trim((string) @file_get_contents($deployLastRefPath)) !== '';
 
 ?>
 <!DOCTYPE html>
@@ -934,6 +937,13 @@ if ($loggedIn && !$missingConfig) {
         <div class="step" id="hub-zip">
             <h3>3. Build deploy ZIP</h3>
             <p class="desc mb-2">Builds a file under <code>dist/</code> (same as <code>php deploy/build.php</code> from the project root). Most of the time choose <strong>Full site</strong>, download the ZIP, upload it to your host, then run <code>composer install --no-dev</code> on the server if you did not include <code>vendor</code>.</p>
+            <?php if ($loggedIn && !$deployLastRefOk): ?>
+                <div class="alert alert-info py-2 small mb-3">
+                    <strong>First-time note for “changed files since last marked deploy”:</strong> that option needs a saved baseline in <code>.deploy/last-ref</code>.
+                    A <strong>full ZIP without</strong> “After a successful ZIP, remember this deploy” does <strong>not</strong> create it.
+                    To start using marker-based deltas: run <strong>Remember this deploy only (no ZIP)</strong> once (sets baseline to your current commit), or tick <strong>remember this deploy</strong> after your next successful full/delta ZIP.
+                </div>
+            <?php endif; ?>
             <form method="post" id="pack-form">
                 <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="hub_action" value="pack">
@@ -951,7 +961,7 @@ if ($loggedIn && !$missingConfig) {
                         <input class="custom-control-input" type="radio" name="mode" id="pk_dm" value="delta_marker">
                         <label class="custom-control-label" for="pk_dm">
                             <span class="pack-mode-line">Changed files since last marked deploy</span>
-                            <span class="pack-mode-hint">Smaller ZIP: only files changed since the commit stored in <code>.deploy/last-ref</code>. You must have used “remember this deploy” (marker) at least once before.</span>
+                            <span class="pack-mode-hint">Smaller ZIP: only files changed since the commit in <code>.deploy/last-ref</code>. That file appears only after <strong>Remember this deploy only</strong> or after a ZIP with <strong>remember this deploy</strong> checked — not automatically on a plain full ZIP.</span>
                         </label>
                     </div>
                     <div class="custom-control custom-radio">
