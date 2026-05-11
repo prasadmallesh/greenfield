@@ -14,6 +14,7 @@ use App\Repositories\ProductMasterRepository;
 use App\Repositories\TaxMasterRepository;
 use App\Repositories\UnitMasterRepository;
 use App\Services\MenuPermissionService;
+use App\Support\AdminLayout;
 use App\Support\HttpUtil;
 use App\Support\PayTerms;
 use App\View\PhpRenderer;
@@ -38,6 +39,7 @@ final class AdminMasterRoutes
         $catShop = new CategoryRepository($pdo);
 
         $menu = static fn (): MenuPermissionService => new MenuPermissionService($pageRepo);
+        $sidebarCounts = AdminLayout::sidebarCounts($pdo);
 
         $flashGet = static function (): array {
             $f = $_SESSION['admin_flash'] ?? [];
@@ -62,7 +64,7 @@ final class AdminMasterRoutes
         };
 
         $group->map(['GET', 'POST'], '/masters/categories', function (\Psr\Http\Message\ServerRequestInterface $req) use (
-            $view, $base, $catM, $menu, $flashGet, $flashSet
+            $view, $base, $catM, $menu, $flashGet, $flashSet, $sidebarCounts
         ) {
             $flash = $flashGet();
             $msg = (string) ($flash['msg'] ?? '');
@@ -110,6 +112,7 @@ final class AdminMasterRoutes
             return HttpUtil::html($view->render('admin/masters_categories', [
                 'base' => $base,
                 'menu' => $menu(),
+                'adminSidebarCounts' => $sidebarCounts,
                 'rows' => $catM->listAll(),
                 'editRow' => $editRow,
                 'msg' => $msg,
@@ -118,7 +121,7 @@ final class AdminMasterRoutes
         });
 
         $group->map(['GET', 'POST'], '/masters/tax', function (\Psr\Http\Message\ServerRequestInterface $req) use (
-            $view, $base, $taxM, $menu, $flashGet, $flashSet
+            $view, $base, $taxM, $menu, $flashGet, $flashSet, $sidebarCounts
         ) {
             $flash = $flashGet();
             $msg = (string) ($flash['msg'] ?? '');
@@ -160,6 +163,7 @@ final class AdminMasterRoutes
             return HttpUtil::html($view->render('admin/masters_tax', [
                 'base' => $base,
                 'menu' => $menu(),
+                'adminSidebarCounts' => $sidebarCounts,
                 'rows' => $taxM->listAll(),
                 'editRow' => $editRow,
                 'msg' => $msg,
@@ -168,7 +172,7 @@ final class AdminMasterRoutes
         });
 
         $group->map(['GET', 'POST'], '/masters/units', function (\Psr\Http\Message\ServerRequestInterface $req) use (
-            $view, $base, $unitM, $menu, $flashGet, $flashSet
+            $view, $base, $unitM, $menu, $flashGet, $flashSet, $sidebarCounts
         ) {
             $flash = $flashGet();
             $msg = (string) ($flash['msg'] ?? '');
@@ -208,6 +212,7 @@ final class AdminMasterRoutes
             return HttpUtil::html($view->render('admin/masters_units', [
                 'base' => $base,
                 'menu' => $menu(),
+                'adminSidebarCounts' => $sidebarCounts,
                 'rows' => $unitM->listAll(),
                 'editRow' => $editRow,
                 'msg' => $msg,
@@ -216,7 +221,7 @@ final class AdminMasterRoutes
         });
 
         $group->map(['GET', 'POST'], '/masters/fuel', function (\Psr\Http\Message\ServerRequestInterface $req) use (
-            $view, $base, $fuelM, $menu, $flashGet, $flashSet
+            $view, $base, $fuelM, $menu, $flashGet, $flashSet, $sidebarCounts
         ) {
             $flash = $flashGet();
             $msg = (string) ($flash['msg'] ?? '');
@@ -262,6 +267,7 @@ final class AdminMasterRoutes
             return HttpUtil::html($view->render('admin/masters_fuel', [
                 'base' => $base,
                 'menu' => $menu(),
+                'adminSidebarCounts' => $sidebarCounts,
                 'rows' => $fuelM->listAll(),
                 'editRow' => $editRow,
                 'msg' => $msg,
@@ -270,7 +276,7 @@ final class AdminMasterRoutes
         });
 
         $group->map(['GET', 'POST'], '/masters/products', function (\Psr\Http\Message\ServerRequestInterface $req) use (
-            $view, $base, $prodM, $catShop, $unitM, $menu, $flashGet, $flashSet, $staffUid, $staffType
+            $view, $base, $prodM, $catShop, $unitM, $menu, $flashGet, $flashSet, $staffUid, $staffType, $sidebarCounts
         ) {
             $flash = $flashGet();
             $msg = (string) ($flash['msg'] ?? '');
@@ -387,6 +393,7 @@ final class AdminMasterRoutes
             return HttpUtil::html($view->render('admin/masters_parties', [
                 'base' => $base,
                 'menu' => $menu(),
+                'adminSidebarCounts' => $sidebarCounts,
                 'rows' => $partyM->listForMaster($staffUid(), $staffType(), 500),
                 'editRow' => $editRow,
                 'msg' => $msg,

@@ -246,6 +246,74 @@ ob_start();
         return parseFloat(String(s).trim().replace(',', '.'));
     }
 
+    /** Sum allocated credit (party-credit invoice “cash envelope”), legacy ChkCreditAmount / .cr-text-box. */
+    function sumCrTextBoxes() {
+        var tot = 0;
+        document.querySelectorAll('.cr-text-box').forEach(function (el) {
+            if (el.value !== '' && !el.disabled) tot += parseNum(el.value) || 0;
+        });
+        return Math.round(tot * 100) / 100;
+    }
+
+    /**
+     * Distribute hd_credit_amt across checked rows in table order (legacy behaviour + envelope fill).
+     * Each row gets min(remaining pool, row balance) until pool is exhausted.
+     */
+    function redistributeCreditEnvelope() {
+        var partycr = document.getElementById('partycr');
+        var hdEl = document.getElementById('hd_credit_amt');
+        var crRead = document.getElementById('cramt');
+        var amtSpan = document.getElementById('amt-container');
+        var hdAmt = document.getElementById('hd_amt_container');
+        if (!partycr || partycr.value === '' || !hdEl) return;
+
+        var pool = parseNum(hdEl.value);
+        if (isNaN(pool) || pool < 0) pool = 0;
+        pool = Math.round(pool * 100) / 100;
+
+        document.querySelectorAll('.cr-text-box').forEach(function (el) {
+            el.value = '';
+            el.disabled = true;
+        });
+
+        var tbody = form.querySelector('tbody');
+        if (!tbody) return;
+        var trs = tbody.querySelectorAll('tr');
+        for (var i = 0; i < trs.length; i++) {
+            var chk = trs[i].querySelector('.chkcls');
+            if (!chk || !chk.checked) continue;
+            var rowId = chk.getAttribute('data-row');
+            if (rowId == null || rowId === '') continue;
+            var crEl = document.getElementById('paycramt' + rowId);
+            var bamtEl = document.getElementById('bamt' + rowId);
+            if (!crEl || !bamtEl) {
+                chk.checked = false;
+                continue;
+            }
+            var b = parseNum(bamtEl.value);
+            if (isNaN(b) || b <= 0) {
+                chk.checked = false;
+                continue;
+            }
+            crEl.disabled = false;
+            var alloc = Math.min(b, pool);
+            alloc = Math.round(alloc * 100) / 100;
+            if (alloc > 0) {
+                crEl.value = alloc.toFixed(2);
+                pool = Math.round((pool - alloc) * 100) / 100;
+            } else if (pool <= 0.001) {
+                chk.checked = false;
+                crEl.disabled = true;
+                crEl.value = '';
+            }
+        }
+
+        if (crRead) crRead.value = pool.toFixed(2);
+        var allocated = Math.round((parseNum(hdEl.value) - pool) * 100) / 100;
+        if (hdAmt) hdAmt.value = allocated.toFixed(2);
+        if (amtSpan) amtSpan.textContent = allocated.toFixed(2);
+    }
+
     function setPay(rowId) {
         var chk = document.getElementById('chk' + rowId);
         if (!chk) return;
@@ -269,14 +337,18 @@ ob_start();
                 }
                 chkAmount(rowId);
                 setBalanceAmt();
-            } else if (crEl) {
-                crEl.disabled = false;
+            } else {
+                redistributeCreditEnvelope();
             }
         } else {
             if (payEl) { payEl.disabled = true; payEl.value = ''; }
             if (crEl) { crEl.disabled = true; crEl.value = ''; }
-            chkAmount(rowId);
-            setBalanceAmt();
+            if (partycr && partycr.value !== '') {
+                redistributeCreditEnvelope();
+            } else {
+                chkAmount(rowId);
+                setBalanceAmt();
+            }
         }
     }
 
@@ -312,6 +384,34 @@ ob_start();
         return true;
     }
 
+    /** After manual credit edit: sync remaining pool display (sale-bill-settlement.php ChkCreditAmount). */
+    function chkCreditAmount(rowId) {
+        var hdPool = parseNum(document.getElementById('hd_credit_amt').value);
+        if (isNaN(hdPool)) hdPool = 0;
+        var el = document.getElementById('paycramt' + rowId);
+        var bamtEl = document.getElementById('bamt' + rowId);
+        if (!el || !bamtEl) return;
+        var pamt = parseNum(el.value);
+        if (el.value === '' || isNaN(pamt)) pamt = 0;
+        var bamt = parseNum(bamtEl.value) || 0;
+        if (pamt > bamt) {
+            alert('Credit amount is greater than invoice balance.');
+            el.value = '';
+            pamt = 0;
+        }
+        var tot = sumCrTextBoxes();
+        if (tot > hdPool + 0.001) {
+            alert('Total credit applied is greater than available credit.');
+            el.value = '';
+            tot = sumCrTextBoxes();
+        }
+        var remaining = Math.round((hdPool - tot) * 100) / 100;
+        var crRead = document.getElementById('cramt');
+        if (crRead) crRead.value = remaining.toFixed(2);
+        document.getElementById('hd_amt_container').value = tot.toFixed(2);
+        document.getElementById('amt-container').textContent = tot.toFixed(2);
+    }
+
     function setBalanceAmt() {
         var cp = document.getElementById('cpayamt');
         var bp = document.getElementById('bpayamt');
@@ -329,6 +429,12 @@ ob_start();
         el.addEventListener('blur', function () {
             var id = el.id.replace('payamt', '');
             chkAmount(id);
+        });
+    });
+    document.querySelectorAll('.cr-text-box').forEach(function (el) {
+        el.addEventListener('blur', function () {
+            var id = el.id.replace('paycramt', '');
+            chkCreditAmount(id);
         });
     });
 
@@ -372,16 +478,17 @@ ob_start();
         document.querySelectorAll('.chkcls').forEach(function (c) { if (c.checked) ok = true; });
         if (!ok) { e.preventDefault(); alert('Please select at least one line.'); return false; }
         var partycr = document.getElementById('partycr');
-        var crAmt = parseNum(document.getElementById('cramt') ? document.getElementById('cramt').value : '0');
-        if (crAmt > 0 && partycr && partycr.value !== '') {
+        var remCr = parseNum(document.getElementById('cramt') ? document.getElementById('cramt').value : '0');
+        /* Legacy BillSettlement: if remaining credit > 0, each checked line must have credit applied; else pay path only when no party credit invoice. */
+        if (remCr > 0.001 && partycr && partycr.value !== '') {
             document.querySelectorAll('.chkcls').forEach(function (c) {
                 if (!c.checked) return;
                 var id = c.getAttribute('data-row');
                 var pc = document.getElementById('paycramt' + id);
                 if (pc && (!pc.value || parseNum(pc.value) <= 0)) ok = false;
             });
-            if (!ok) { e.preventDefault(); alert('Enter credit amount on each selected line.'); return false; }
-        } else {
+            if (!ok) { e.preventDefault(); alert('Please check your credit amount.\nEach selected line needs a credit amount while credit remains.'); return false; }
+        } else if (!partycr || partycr.value === '') {
             var payOk = true;
             document.querySelectorAll('.chkcls').forEach(function (c) {
                 if (!c.checked) return;

@@ -24,7 +24,10 @@ use App\Services\InvoicePdfService;
 use App\Services\MenuPermissionService;
 use App\Services\PreorderAdminService;
 use App\Services\SaleBillNumberService;
+use App\Repositories\LegacyDashboardRepository;
+use App\Support\AdminLayout;
 use App\Support\HttpUtil;
+use App\Services\RevertPaymentService;
 use App\View\PhpRenderer;
 use Slim\App;
 use Slim\Routing\RouteCollectorProxy;
@@ -116,6 +119,9 @@ final class RouteRegistrar
             $productMaster,
             $billSettlement,
         ): void {
+            $legacyDash = new LegacyDashboardRepository($pdo);
+            $revertSvc = new RevertPaymentService($pdo);
+            $adm = static fn (array $a): array => AdminLayout::with($pdo, $a);
             $group->get('/logout', function () use ($base) {
                 unset($_SESSION['login_user_id'], $_SESSION['login_user'], $_SESSION['login_user_type'], $_SESSION['login_payin'], $_SESSION['login_payout']);
 
@@ -125,16 +131,16 @@ final class RouteRegistrar
             $group->get('', function () use ($view, $base, $pageRepo) {
                 $menu = new MenuPermissionService($pageRepo);
 
-                return HttpUtil::html($view->render('admin/dashboard', ['base' => $base, 'menu' => $menu]));
+                return HttpUtil::html($view->render('admin/dashboard', $adm(['base' => $base, 'menu' => $menu])));
             });
 
-            $group->get('/calendar', function () use ($view, $base, $pageRepo) {
+            $group->get('/calendar', function () use ($view, $base, $pageRepo, $adm) {
                 $menu = new MenuPermissionService($pageRepo);
 
-                return HttpUtil::html($view->render('admin/calendar_stub', ['base' => $base, 'menu' => $menu]));
+                return HttpUtil::html($view->render('admin/calendar_stub', $adm(['base' => $base, 'menu' => $menu])));
             });
 
-            $group->get('/preorders', function (\Psr\Http\Message\ServerRequestInterface $req) use ($view, $base, $pageRepo, $partyRepo, $preorderRepo) {
+            $group->get('/preorders', function (\Psr\Http\Message\ServerRequestInterface $req) use ($view, $base, $pageRepo, $partyRepo, $preorderRepo, $adm) {
                 $menu = new MenuPermissionService($pageRepo);
                 $q = $req->getQueryParams();
                 $fdt = isset($q['fdt']) ? (string) $q['fdt'] : '';
@@ -156,7 +162,7 @@ final class RouteRegistrar
                     250,
                 );
 
-                return HttpUtil::html($view->render('admin/preorders', [
+                return HttpUtil::html($view->render('admin/preorders', $adm([
                     'base' => $base,
                     'menu' => $menu,
                     'rows' => $rows,
@@ -166,7 +172,7 @@ final class RouteRegistrar
                     'tdt' => $tdt,
                     'pid' => $pid,
                     'puid' => $puid,
-                ]));
+                ])));
             });
 
             $toDmY = static function ($v): string {
@@ -215,6 +221,7 @@ final class RouteRegistrar
                 $deliverySvc,
                 $saleAccess,
                 $toDmY,
+                $adm,
             ) {
                 $sbid = trim((string) ($args['sbid'] ?? ''));
                 $ut = (string) ($_SESSION['login_user_type'] ?? '');
@@ -245,7 +252,7 @@ final class RouteRegistrar
                     $dvSel = $invdt;
                 }
 
-                return HttpUtil::html($view->render('admin/preorder_edit', [
+                return HttpUtil::html($view->render('admin/preorder_edit', $adm([
                     'base' => $base,
                     'menu' => $menu,
                     'sbid' => $sbid,
@@ -259,7 +266,7 @@ final class RouteRegistrar
                     'dvSelected' => $dvSel,
                     'flashMsg' => (string) ($flash['msg'] ?? ''),
                     'flashType' => (string) ($flash['type'] ?? ''),
-                ]));
+                ])));
             });
 
             $group->post('/preorders/{sbid}/modify', function (\Psr\Http\Message\ServerRequestInterface $req, \Psr\Http\Message\ResponseInterface $res, array $args) use (
@@ -353,7 +360,7 @@ final class RouteRegistrar
                 return HttpUtil::redirect($base . '/admin/preorders');
             });
 
-            $group->map(['GET', 'POST'], '/page-manager', function (\Psr\Http\Message\ServerRequestInterface $req) use ($view, $base, $pageRepo) {
+            $group->map(['GET', 'POST'], '/page-manager', function (\Psr\Http\Message\ServerRequestInterface $req) use ($view, $base, $pageRepo, $adm) {
                 if ((string) ($_SESSION['login_user_type'] ?? '') !== 'A') {
                     return HttpUtil::redirect($base . '/admin');
                 }
@@ -372,17 +379,17 @@ final class RouteRegistrar
                 }
                 $menu = new MenuPermissionService($pageRepo);
 
-                return HttpUtil::html($view->render('admin/page_manager', [
+                return HttpUtil::html($view->render('admin/page_manager', $adm([
                     'base' => $base,
                     'menu' => $menu,
                     'rows' => $pageRepo->allOrderedByPsid(),
                     'msg' => $msg,
-                ]));
+                ])));
             });
 
             AdminMasterRoutes::register($group, $view, $base, $pdo, $pageRepo, $partyRepo);
 
-            $group->get('/invoices/{sbid}/created', function (\Psr\Http\Message\ServerRequestInterface $req, \Psr\Http\Message\ResponseInterface $res, array $args) use ($view, $base, $pageRepo, $partyRepo, $saleAccess) {
+            $group->get('/invoices/{sbid}/created', function (\Psr\Http\Message\ServerRequestInterface $req, \Psr\Http\Message\ResponseInterface $res, array $args) use ($view, $base, $pageRepo, $partyRepo, $saleAccess, $adm) {
                 $sbid = (string) ($args['sbid'] ?? '');
                 $ut = (string) ($_SESSION['login_user_type'] ?? '');
                 $uid = (int) ($_SESSION['login_user_id'] ?? 0);
@@ -393,12 +400,12 @@ final class RouteRegistrar
                 $menu = new MenuPermissionService($pageRepo);
                 $pdfUrl = $base . '/admin/invoices/' . rawurlencode($sbid) . '/pdf';
 
-                return HttpUtil::html($view->render('admin/invoice_created', [
+                return HttpUtil::html($view->render('admin/invoice_created', $adm([
                     'base' => $base,
                     'menu' => $menu,
                     'sbid' => $sbid,
                     'pdfUrl' => $pdfUrl,
-                ]));
+                ])));
             });
 
             $group->get('/invoices/{sbid}/pdf', function (\Psr\Http\Message\ServerRequestInterface $req, \Psr\Http\Message\ResponseInterface $res, array $args) use ($base, $pdfSvc, $partyRepo, $saleAccess) {
@@ -428,6 +435,7 @@ final class RouteRegistrar
                 $partyRepo,
                 $billSettlement,
                 $saleAccess,
+                $adm,
             ) {
                 $menu = new MenuPermissionService($pageRepo);
                 $ut = (string) ($_SESSION['login_user_type'] ?? '');
@@ -495,7 +503,7 @@ final class RouteRegistrar
                 $flash = $_SESSION['bill_settlement_flash'] ?? ['type' => '', 'msg' => ''];
                 unset($_SESSION['bill_settlement_flash']);
 
-                return HttpUtil::html($view->render('admin/bill_settlement', [
+                return HttpUtil::html($view->render('admin/bill_settlement', $adm([
                     'base' => $base,
                     'menu' => $menu,
                     'ptyarr' => BillSettlementService::settlementPayModeOptions(),
@@ -516,7 +524,7 @@ final class RouteRegistrar
                     'pbEntry' => $pbEntry,
                     'flashMsg' => (string) ($flash['msg'] ?? ''),
                     'flashType' => (string) ($flash['type'] ?? ''),
-                ]));
+                ])));
             });
 
             $group->get('/bill-settlement/api/credit', function (\Psr\Http\Message\ServerRequestInterface $req) use ($base, $partyRepo, $billSettlement, $saleAccess) {
@@ -582,10 +590,123 @@ final class RouteRegistrar
                 return HttpUtil::redirect($base . '/admin/bill-settlement' . $q);
             });
 
-            $group->get('/reports', function () use ($view, $base, $pageRepo) {
+            $group->get('/last-invoice-details', function () use ($view, $base, $pageRepo, $legacyDash, $adm) {
                 $menu = new MenuPermissionService($pageRepo);
 
-                return HttpUtil::html($view->render('admin/reports_stub', ['base' => $base, 'menu' => $menu]));
+                return HttpUtil::html($view->render('admin/last_invoice_details', $adm([
+                    'base' => $base,
+                    'menu' => $menu,
+                    'lastBill' => $legacyDash->lastBillSettlementSnapshot(),
+                    'lastEmail' => $legacyDash->lastInvoiceEmailSnapshot(),
+                ])));
+            });
+
+            $group->map(['GET', 'POST'], '/revert-paid-invoices', function (\Psr\Http\Message\ServerRequestInterface $req) use (
+                $view,
+                $base,
+                $pageRepo,
+                $partyRepo,
+                $legacyDash,
+                $revertSvc,
+                $adm,
+            ) {
+                if ((string) ($_SESSION['login_user_type'] ?? '') !== 'A') {
+                    return HttpUtil::html('Forbidden', 403);
+                }
+                $menu = new MenuPermissionService($pageRepo);
+                $flash = $_SESSION['revert_paid_flash'] ?? ['type' => '', 'msg' => ''];
+                unset($_SESSION['revert_paid_flash']);
+                if ($req->getMethod() === 'POST') {
+                    $p = (array) $req->getParsedBody();
+                    $revs = $p['rev'] ?? [];
+                    if (!is_array($revs)) {
+                        $revs = $revs !== null && $revs !== '' ? [$revs] : [];
+                    }
+                    $ok = 0;
+                    foreach ($revs as $pair) {
+                        $s = explode('~', (string) $pair, 2);
+                        if (count($s) === 2 && $revertSvc->deletePayment($s[0], (int) $s[1])) {
+                            ++$ok;
+                        }
+                    }
+                    $_SESSION['revert_paid_flash'] = [
+                        'type' => $ok > 0 ? 'ok' : 'err',
+                        'msg' => $ok > 0 ? "Reverted {$ok} payment(s)." : 'No payments removed (invalid selection or already deleted).',
+                    ];
+
+                    return HttpUtil::redirect($base . '/admin/revert-paid-invoices?' . http_build_query([
+                        'fdt' => (string) ($p['fdt'] ?? ''),
+                        'tdt' => (string) ($p['tdt'] ?? ''),
+                        'pid' => (int) ($p['pid'] ?? 0),
+                    ]));
+                }
+                $q = $req->getQueryParams();
+                $fdt = isset($q['fdt']) ? (string) $q['fdt'] : '';
+                $tdt = isset($q['tdt']) ? (string) $q['tdt'] : '';
+                $pid = isset($q['pid']) ? (int) $q['pid'] : 0;
+                $rows = $legacyDash->searchRevertPayments($fdt, $tdt, $pid, 0, 200);
+
+                return HttpUtil::html($view->render('admin/revert_paid_invoices', $adm([
+                    'base' => $base,
+                    'menu' => $menu,
+                    'parties' => $partyRepo->listPartiesForSelect(),
+                    'fdt' => $fdt,
+                    'tdt' => $tdt,
+                    'pid' => $pid,
+                    'rows' => $rows,
+                    'flashMsg' => (string) ($flash['msg'] ?? ''),
+                    'flashType' => (string) ($flash['type'] ?? ''),
+                ])));
+            });
+
+            $group->get('/qurbani-requests', function (\Psr\Http\Message\ServerRequestInterface $req) use ($view, $base, $pageRepo, $legacyDash, $adm) {
+                $menu = new MenuPermissionService($pageRepo);
+                if (!$menu->isActiveAtIndex(26)) {
+                    return HttpUtil::html('Forbidden', 403);
+                }
+                $q = $req->getQueryParams();
+                $dtype = isset($q['dtype']) ? (string) $q['dtype'] : '';
+                $location = isset($q['location']) ? (string) $q['location'] : '';
+                if (isset($q['export']) && (string) $q['export'] === '1') {
+                    $rows = $legacyDash->listQurbaniRows($dtype !== '' ? $dtype : null, $location !== '' ? $location : null, 5000);
+                    $csv = "qid,fname,lname,email,phno,edt,ddt,dtype,location,status\n";
+                    foreach ($rows as $r) {
+                        $csv .= sprintf(
+                            "%d,\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
+                            (int) ($r['qid'] ?? 0),
+                            str_replace('"', '""', (string) ($r['fname'] ?? '')),
+                            str_replace('"', '""', (string) ($r['lname'] ?? '')),
+                            str_replace('"', '""', (string) ($r['email'] ?? '')),
+                            str_replace('"', '""', (string) ($r['phno'] ?? '')),
+                            str_replace('"', '""', (string) ($r['edt'] ?? '')),
+                            str_replace('"', '""', (string) ($r['ddt'] ?? '')),
+                            str_replace('"', '""', (string) ($r['dtype'] ?? '')),
+                            str_replace('"', '""', (string) ($r['location'] ?? '')),
+                            str_replace('"', '""', (string) ($r['order_status'] ?? '')),
+                        );
+                    }
+                    $res = new \Slim\Psr7\Response();
+                    $res->getBody()->write($csv);
+
+                    return $res
+                        ->withHeader('Content-Type', 'text/csv; charset=UTF-8')
+                        ->withHeader('Content-Disposition', 'attachment; filename="qurbani-export.csv"');
+                }
+                $rows = $legacyDash->listQurbaniRows($dtype !== '' ? $dtype : null, $location !== '' ? $location : null, 500);
+
+                return HttpUtil::html($view->render('admin/qurbani_requests', $adm([
+                    'base' => $base,
+                    'menu' => $menu,
+                    'dtype' => $dtype,
+                    'location' => $location,
+                    'rows' => $rows,
+                ])));
+            });
+
+            $group->get('/reports', function () use ($view, $base, $pageRepo, $adm) {
+                $menu = new MenuPermissionService($pageRepo);
+
+                return HttpUtil::html($view->render('admin/reports_stub', $adm(['base' => $base, 'menu' => $menu])));
             });
         })->add(new StaffAuthMiddleware($base . '/admin/login', $adminPub));
 
