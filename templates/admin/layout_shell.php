@@ -15,12 +15,12 @@ $showDashSidebar = isset($menu) && $menu instanceof \App\Services\MenuPermission
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title><?= htmlspecialchars($title, ENT_QUOTES, 'UTF-8') ?></title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">
-    <style>body{background:#f4f6f4;} .gf-main{background:#fff;padding:1.25rem;border-radius:4px;}</style>
+    <style>body{background:#f4f6f4;} .gf-main{background:#fff;padding:1.25rem;border-radius:0;}</style>
 </head>
 <body class="pb-5">
-<div class="container-fluid">
+<div class="container-fluid px-0">
     <?php include __DIR__ . '/partials/nav.php'; ?>
-    <main class="container">
+    <main class="container-fluid px-2 px-md-3">
         <?php if ($showDashSidebar): ?>
             <div class="row">
                 <aside class="col-lg-3 mb-3">

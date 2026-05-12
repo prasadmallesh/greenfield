@@ -128,7 +128,7 @@ final class RouteRegistrar
                 return HttpUtil::redirect($base . '/admin/login');
             });
 
-            $group->get('', function () use ($view, $base, $pageRepo) {
+            $group->get('', function () use ($view, $base, $pageRepo, $adm) {
                 $menu = new MenuPermissionService($pageRepo);
 
                 return HttpUtil::html($view->render('admin/dashboard', $adm(['base' => $base, 'menu' => $menu])));
@@ -618,21 +618,28 @@ final class RouteRegistrar
                 unset($_SESSION['revert_paid_flash']);
                 if ($req->getMethod() === 'POST') {
                     $p = (array) $req->getParsedBody();
-                    $revs = $p['rev'] ?? [];
-                    if (!is_array($revs)) {
-                        $revs = $revs !== null && $revs !== '' ? [$revs] : [];
+                    $oids = $p['oids'] ?? $p['rev'] ?? [];
+                    if (!is_array($oids)) {
+                        $oids = $oids !== null && $oids !== '' ? [$oids] : [];
                     }
                     $ok = 0;
-                    foreach ($revs as $pair) {
-                        $s = explode('~', (string) $pair, 2);
-                        if (count($s) === 2 && $revertSvc->deletePayment($s[0], (int) $s[1])) {
-                            ++$ok;
+                    if ($oids === []) {
+                        $_SESSION['revert_paid_flash'] = [
+                            'type' => 'err',
+                            'msg' => 'Please tick at least one payment row to revert (legacy behaviour: same as empty selection on Revert).',
+                        ];
+                    } else {
+                        foreach ($oids as $pair) {
+                            $s = explode('~', (string) $pair, 2);
+                            if (count($s) === 2 && $revertSvc->deletePayment($s[0], (int) $s[1])) {
+                                ++$ok;
+                            }
                         }
+                        $_SESSION['revert_paid_flash'] = [
+                            'type' => $ok > 0 ? 'ok' : 'err',
+                            'msg' => $ok > 0 ? "Invoice payment reverted: {$ok} row(s) removed from sale_payment_data." : 'No payments removed (invalid selection or already deleted).',
+                        ];
                     }
-                    $_SESSION['revert_paid_flash'] = [
-                        'type' => $ok > 0 ? 'ok' : 'err',
-                        'msg' => $ok > 0 ? "Reverted {$ok} payment(s)." : 'No payments removed (invalid selection or already deleted).',
-                    ];
 
                     return HttpUtil::redirect($base . '/admin/revert-paid-invoices?' . http_build_query([
                         'fdt' => (string) ($p['fdt'] ?? ''),
@@ -644,7 +651,9 @@ final class RouteRegistrar
                 $fdt = isset($q['fdt']) ? (string) $q['fdt'] : '';
                 $tdt = isset($q['tdt']) ? (string) $q['tdt'] : '';
                 $pid = isset($q['pid']) ? (int) $q['pid'] : 0;
-                $rows = $legacyDash->searchRevertPayments($fdt, $tdt, $pid, 0, 200);
+                /* Legacy GetInvoiceSearch: require both dates OR party — do not list everything by default. */
+                $hasSearch = ($fdt !== '' && $tdt !== '') || $pid > 0;
+                $rows = $hasSearch ? $legacyDash->searchRevertPayments($fdt, $tdt, $pid, 0, 200) : [];
 
                 return HttpUtil::html($view->render('admin/revert_paid_invoices', $adm([
                     'base' => $base,
@@ -654,6 +663,7 @@ final class RouteRegistrar
                     'tdt' => $tdt,
                     'pid' => $pid,
                     'rows' => $rows,
+                    'hasSearch' => $hasSearch,
                     'flashMsg' => (string) ($flash['msg'] ?? ''),
                     'flashType' => (string) ($flash['type'] ?? ''),
                 ])));
